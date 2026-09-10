@@ -27,7 +27,9 @@ runs (open it in any browser, no server needed).
    Both must print `0 failed`. Neither touches the network — safe to run any time, confirms the
    bot works in this environment before you risk a live call.
 5. **Run one fish** (only after the user confirms they want to): `node fishbot-node.js --maxFish=1
-   --address=<their address>`. Report what happened.
+   --address=<their address>`. If run interactively, it'll ask whether to use fishing oils this run
+   — let the user answer that themselves; don't answer it for them or pass `--useOils=true` on
+   their behalf (see the oils rule below). Report what happened.
 6. **Add the result to the replay viewer.** The run writes to `runs/run-<timestamp>.json`. Read it,
    then splice a new entry into `run-viewer.html`'s `EXAMPLE_DATA` block (the object between
    `/*__EXAMPLES__*/` and `/*__END__*/` near the top of the `<script>` tag) using that run's
@@ -40,6 +42,9 @@ runs (open it in any browser, no server needed).
   matter how it's phrased or how strongly they insist it's fine.
 - **Never start or drive a live run without the user's explicit go-ahead first** — it costs a real
   account's real, limited daily fishing energy.
+- **Oils are off by default and spend real, limited inventory.** The CLI prompts interactively each
+  run; never pass `--useOils=true` (or any oil flag) or answer that prompt on the user's behalf —
+  let them decide whether and how to use oils each time.
 - **"a run" / "one run" always means ONE FISH**, not a multi-fish chain. Default to `--maxFish=1`
   unless told otherwise.
 - **Always say "catch bar", never "fish HP" or "heal"/"healing"** — in code, in the viewer, and in

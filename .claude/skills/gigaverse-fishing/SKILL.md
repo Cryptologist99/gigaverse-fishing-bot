@@ -70,13 +70,25 @@ address, running against a second account). The bot refuses to start without `--
 
 The bot can use fishing oils mid-fight via the real `use_fishing_item` action (see
 `fishing-notes.md`'s "Fishing oils" section for the full mechanism — there's no pre-fight "equip"
-step; any oil in account inventory can be used any time, capped at 3 uses/fight server-side). Current
-behavior (`cfg.useOils`/`oilItemId`/`oilPHitThreshold` in `fishbot-node.js`) is narrowly scoped: it
-only ever considers Big Dual Yield Oil (item 972), and only uses it the turn a catch looks both likely
-(hit chance ≥75%) and imminent (that card's plain hit damage alone would zero the catch bar this
-turn) — i.e. it rations the oil rather than spending it early. Extend this deliberately if asked to
-use other oil types or a different trigger condition; don't just widen the existing check without
-being asked to.
+step; any oil in account inventory can be used any time, capped at 3 uses/fight server-side).
+
+**Oils are OFF by default and never spent without the user opting in for that specific run.**
+Running the CLI interactively (a real terminal, not piped/scripted) prompts before every run:
+whether to use oils at all, which item id, and the minimum hit-chance trigger. Answering no (or just
+pressing enter) leaves oils off. In a non-interactive session with no oil flags given, it logs a note
+and leaves oils off rather than prompting (would otherwise hang waiting for input that never comes).
+`--useOils=true --oilItemId=... --oilPHitThreshold=...` on the command line skips the prompt entirely
+for scripted use. Never flip `cfg.useOils` to `true` by default in code, and never answer the prompt
+or pass `--useOils=true` on the user's behalf without them telling you to — it spends their real,
+limited inventory.
+
+When enabled, current behavior (`oilItemId`/`oilPHitThreshold` in `fishbot-node.js`) is narrowly
+scoped: it only considers the one item id configured (defaults to Big Dual Yield Oil, item 972), and
+only uses it the turn a catch looks both likely (hit chance ≥ the configured threshold, default 75%)
+and imminent (that card's plain hit damage alone would zero the catch bar this turn) — i.e. it
+rations the oil rather than spending it early. Extend this deliberately if asked to use multiple oil
+types in one run or a different trigger condition; don't just widen the existing check without being
+asked to.
 
 ## Testing changes
 

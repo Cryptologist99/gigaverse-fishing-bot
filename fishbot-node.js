@@ -44,13 +44,19 @@ const cfg = {
   // Fishing oils: confirmed live 2026-09-10 that oils have NO pre-fight "equip" step at all --
   // the real action is `use_fishing_item` (data: {itemId, slotIndex, tierId}), which spends
   // directly from account inventory (GET /api/items/balances) any time mid-fight, capped at 3
-  // uses/fight server-side ("Max consumables used this game (3)"). For now the bot only knows
-  // about Big Dual Yield Oil (item 972 -- boosts item/fish yield "this game", a persistent
-  // per-game % boost once triggered, not a per-turn effect) and only uses it right before a
-  // likely catch (per user 2026-09-10: ration the oil, don't waste it on a fish that might still
+  // uses/fight server-side ("Max consumables used this game (3)"). When enabled, the bot only
+  // knows about one oil at a time (oilItemId -- boosts item/fish yield "this game", a persistent
+  // per-game % boost once triggered for Dual Yield Oil specifically, not a per-turn effect) and
+  // only uses it right before a likely catch (ration it, don't waste it on a fish that might still
   // escape). tierId's effect is unverified -- passing 0 always worked live for Lil-tier items;
   // kept configurable in case Big-tier items turn out to need a different value.
-  useOils: true, oilItemId: 972, oilTierId: 0, oilPHitThreshold: 0.75,
+  //
+  // OFF by default: using an oil spends real limited inventory on the user's actual account, so
+  // the CLI asks interactively each run rather than silently deciding on its own -- see
+  // promptForOilConfig() below, called from the CLI entry point only (never from library/test
+  // usage of run()/playGame()). Passing --useOils=true (or any of the oil flags) on the command
+  // line skips the prompt and uses the flag values directly, for scripted/non-interactive use.
+  useOils: false, oilItemId: 972, oilTierId: 0, oilPHitThreshold: 0.75,
   maxGames: 1,
   maxFish: 6,
   maxTurns: 500, // was 60 -- too low for multi-fish batches: empirically ~5 turns/fish (n=83 real
@@ -975,6 +981,31 @@ function exportRun() {
   return lastRun;
 }
 
+// Interactively asks whether/how to use fishing oils THIS run. Oils spend real, limited account
+// inventory, so this is deliberately opt-in each time rather than a silent standing decision --
+// only called from the CLI entry point below, never when run()/playGame() are used as a library
+// (tests, sim.js) or when any oil flag was already given on the command line (`already` below).
+async function promptForOilConfig(already) {
+  if (already) { log(`oils: using command-line flags (useOils=${cfg.useOils})`); return; }
+  if (!process.stdin.isTTY) {
+    log('oils: non-interactive session, no --useOils flag given -- leaving oils off (use --useOils=true --oilItemId=... to enable without a prompt)');
+    return;
+  }
+  const rl = require('readline/promises').createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const useAns = (await rl.question('Use fishing oils this run? [y/N]: ')).trim().toLowerCase();
+    if (useAns !== 'y' && useAns !== 'yes') { log('oils: off for this run'); return; }
+    const idAns = (await rl.question(`Which item id to use? [${cfg.oilItemId} = Big Dual Yield Oil]: `)).trim();
+    if (idAns) cfg.oilItemId = +idAns;
+    const thrAns = (await rl.question(`Minimum hit chance before using it, 0-1 [${cfg.oilPHitThreshold}]: `)).trim();
+    if (thrAns) cfg.oilPHitThreshold = +thrAns;
+    cfg.useOils = true;
+    log(`oils: ON this run -- itemId=${cfg.oilItemId}, only when hit chance >= ${cfg.oilPHitThreshold} and it would land the catch outright`);
+  } finally {
+    rl.close();
+  }
+}
+
 /* ---- CLI entry point ------------------------------------------------------------ */
 if (require.main === module) {
   const args = {};
@@ -987,6 +1018,7 @@ if (require.main === module) {
     const m = a.match(/^--([\w]+)=(.+)$/);
     if (m) args[m[1]] = isPlainDecimal(m[2]) ? +m[2] : m[2];
   }
+  const oilFlagGiven = ['useOils', 'oilItemId', 'oilTierId', 'oilPHitThreshold'].some(k => k in args);
   Object.assign(cfg, args);
   if (!cfg.address) {
     console.error('[FishBot] No --address given (and cfg.address is unset). Pass your wallet address, e.g.:\n' +
@@ -995,7 +1027,9 @@ if (require.main === module) {
     process.exit(1);
   }
   process.on('SIGINT', () => { stop = true; log('stopping...'); });
-  run(exportRun).catch(e => { warn('fatal:', e.message); process.exit(1); });
+  promptForOilConfig(oilFlagGiven)
+    .then(() => run(exportRun))
+    .catch(e => { warn('fatal:', e.message); process.exit(1); });
 }
 
 module.exports = { run, stop: () => { stop = true; }, config: o => Object.assign(cfg, o),
