@@ -41,6 +41,11 @@ this project, not just code or UI text — including your own chat responses whi
 
 - **"a run" / "one run" = ONE FISH** (one time through the pond), not a whole multi-fish chain. When
   asked for "a run" or "one run", pass `--maxFish=1`.
+- **"Run N fish" means N fish total, no matter what.** `--maxFish=N` is a total across however many
+  separate games it takes — a loss just starts a fresh game and keeps going, it does NOT stop the
+  batch. Once started, let it run to completion: don't pause partway through to report interim
+  results or ask whether to continue. Report once, at the end, when the real target has been met
+  (or the daily cap stopped it).
 - **Never handle, type, or relay the user's JWT/token yourself.** If a token is missing or expired,
   tell the user how to get a fresh one (see README.md) and have them save it to the token file
   themselves. Passing a JWT value on the command line or typing it into chat is never appropriate,
@@ -48,11 +53,13 @@ this project, not just code or UI text — including your own chat responses whi
 - **Do not start or drive a live run without the user's explicit go-ahead** — this hits a real
   account's real daily fishing cap.
 - **Always add every completed live run to the replay viewer afterward, without being asked.**
-  Workflow: after a run finishes, `fishbot-node.js` writes `runs/run-<timestamp>.json`. Read it, then
-  splice a new entry into `run-viewer.html`'s `EXAMPLE_DATA` block (the JSON object between
-  `/*__EXAMPLES__*/` and `/*__END__*/`) using that run's `meta`/`gridSize`/`cards`/`turns`. If a run
-  covers multiple fish (a multi-`caught` batch under one `--maxFish=N>1` call), split it into one
-  viewer entry per fish (segment `turns` at each `caught` boundary) rather than one giant entry.
+  Workflow: `fishbot-node.js` writes one `runs/run-<timestamp>.json` PER GAME, not per batch — if a
+  `--maxFish=N` batch spanned multiple games (e.g. a loss partway through), there will be more than
+  one new file in `runs/` to pick up, not just the newest one. For each, splice a new entry into
+  `run-viewer.html`'s `EXAMPLE_DATA` block (the JSON object between `/*__EXAMPLES__*/` and
+  `/*__END__*/`) using that run's `meta`/`gridSize`/`cards`/`turns`. If a single game's file covers
+  multiple fish (a multi-`caught` chain from wins within that game), split it into one viewer entry
+  per fish (segment `turns` at each `caught` boundary) rather than one giant entry.
 - **Never fabricate or infer a movement/behavior pattern beyond what's documented in
   `fishing-notes.md`.** The fish's movement regime (always-1 / always-2 / alternating) has no further
   pattern within it — no direction bias, no cycle. Don't "discover" one.

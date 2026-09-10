@@ -20,8 +20,13 @@
  *
  * Usage:
  *   node fishbot-node.js --maxFish=1 --address=0xYOUR_ADDRESS
- *   node fishbot-node.js --maxFish=3 --maxGames=1 --address=0xYOUR_ADDRESS
+ *   node fishbot-node.js --maxFish=5 --address=0xYOUR_ADDRESS
  *   node fishbot-node.js --maxFish=1 --address=0xYOUR_ADDRESS --tokenFile=token-main.txt
+ *
+ * --maxFish=N means N fish TOTAL -- a loss ends the current game, not the batch; the bot just
+ * starts a new one and keeps going until N fish have actually been played (win or loss) or the
+ * account's daily fishing cap is hit. --maxGames is an optional extra safety cap on how many
+ * separate games it's allowed to start along the way; unset (default) means no such cap.
  * ========================================================================== */
 'use strict';
 const fs = require('fs');
@@ -57,7 +62,11 @@ const cfg = {
   // usage of run()/playGame()). Passing --useOils=true (or any of the oil flags) on the command
   // line skips the prompt and uses the flag values directly, for scripted/non-interactive use.
   useOils: false, oilItemId: 972, oilTierId: 0, oilPHitThreshold: 0.75,
-  maxGames: 1,
+  // maxFish is a TOTAL across as many separate games as it takes -- a loss ends the current game,
+  // not the batch; run() keeps starting new games until maxFish total fish have been played or
+  // the daily cap is hit. maxGames is now just an optional extra safety cap on game count (null =
+  // uncapped); most users never need it. See run()'s own comment for the reasoning.
+  maxGames: null,
   maxFish: 6,
   maxTurns: 500, // was 60 -- too low for multi-fish batches: empirically ~5 turns/fish (n=83 real
                  // fish across today's runs, avg 4.96, worst single fish 10) and each real turn
@@ -763,7 +772,13 @@ const updateCards = (run, gs) => (gs.deckCardData || []).forEach(d => {
     hitAmt, missAmt, critAmt: amt(d.critEffects) || hitAmt };
 });
 
-async function playGame(n) {
+// fishBudget: how many MORE fish this call is allowed to play before stopping on a win (defaults
+// to cfg.maxFish for any caller that doesn't pass one). Returns {result, fishPlayed} -- fishPlayed
+// lets run() track a TOTAL across however many separate games it takes to reach the real target,
+// since a loss/daycap can end a game after just one fish ("run N fish" means N total fish across
+// as many games as needed, not "stop at the first loss").
+async function playGame(n, fishBudget) {
+  if (fishBudget == null) fishBudget = cfg.maxFish;
   let gs = await fetchState();
   const midFight = gs && gs.playerHp > 0 && gs.fishHp > 0 && gs.fishHp < gs.fishMaxHp && !(gs.cardsToAdd && gs.cardsToAdd.length);
   // A catch that got interrupted before loot() fired (e.g. cfg.maxTurns hit mid-catch, or the
@@ -798,7 +813,7 @@ async function playGame(n) {
     } catch (e) {
       if (/reached max runs/i.test(e.message)) {
         log(`  daily cap reached (server: "${e.message}") -- stopping cleanly, nothing more to catch today`);
-        return 'daycap';
+        return { result: 'daycap', fishPlayed: 0 };
       }
       throw e;
     }
@@ -814,7 +829,7 @@ async function playGame(n) {
   log(`  fish#${fishNo} ${gs.fishHp}/${gs.fishMaxHp} | mana ${gs.playerHp}/${gs.playerMaxHp} | focus ${gs.focusMeter}/${gs.focusMeterMax} | fish@[${gs.fishPosition}] bobber@[${gs.focusPoint}] | hand=[${gs.hand}]`);
 
   for (let t = 0; t < cfg.maxTurns; t++) {
-    if (stop) { run.meta.result = 'stopped'; return 'stopped'; }
+    if (stop) { run.meta.result = 'stopped'; return { result: 'stopped', fishPlayed: fishNo - 1 }; }
 
     if (gs.fishHp <= 0) {
       const offered = (gs.cardsToAdd && gs.cardsToAdd.length) ? gs.cardsToAdd : (findOfferedCards(resp) || []);
@@ -850,12 +865,12 @@ async function playGame(n) {
       const cd = last && last.catchDetails;
       const cdTxt = cd ? ` (quality ${cd.quality}, rarity ${cd.rarity}${cd.plusOneQuality ? ', +1 quality' : ''}${cd.plusOneRarity ? ', +1 rarity' : ''}${cd.doubled ? ', doubled' : ''}, +${cd.sediment || 0} Sediment)` : '';
       log(`  CAUGHT ${(gs.caughtFish && gs.caughtFish.name) || ''}!${cdTxt} draft [${offered.map(o => o.id)}] -> pick card ${pick ? pick.id : '(none)'}`);
-      if (!pick) { run.meta.result = 'win'; log('  stopping (no draft)'); return 'win'; }
+      if (!pick) { run.meta.result = 'win'; log('  stopping (no draft)'); return { result: 'win', fishPlayed: fishNo }; }
       await sleep(cfg.delayMs);
       resp = await action('loot', { cards: [pick.id], nodeId: '', tierId: 0 });
       if (last) last.draft = { options: ranked.map(r => r.id), picked: pick.id };
       gs = stateOf(resp); updateCards(run, gs);
-      if (fishNo >= cfg.maxFish) { run.meta.result = 'win'; log(`  stopping (maxFish ${cfg.maxFish}) — matches "Leave", no fight left active`); return 'win'; }
+      if (fishNo >= fishBudget) { run.meta.result = 'win'; log(`  stopping (fish budget ${fishBudget} reached this game) — matches "Leave", no fight left active`); return { result: 'win', fishPlayed: fishNo }; }
       await sleep(cfg.delayMs);
       // Same daily-cap rejection as the initial start_run above can land here too -- the cap can be
       // hit mid-batch, right after looting a catch, not just at the very start of a run(). Missing
@@ -868,7 +883,7 @@ async function playGame(n) {
         if (/reached max runs/i.test(e.message)) {
           run.meta.result = 'win';
           log(`  daily cap reached (server: "${e.message}") -- stopping cleanly, nothing more to catch today`);
-          return 'daycap';
+          return { result: 'daycap', fishPlayed: fishNo };
         }
         throw e;
       }
@@ -877,8 +892,8 @@ async function playGame(n) {
       log(`  +added card ${pick.id}. fish#${fishNo} ${gs.fishHp}/${gs.fishMaxHp} | mana ${gs.playerHp} | fish@[${gs.fishPosition}] hand=[${gs.hand}]`);
       continue;
     }
-    if (gs.playerHp <= 0)          { run.meta.result = 'loss'; return lose(gs, 'out of mana'); }
-    if (gs.fishHp >= gs.fishMaxHp) { run.meta.result = 'loss'; return lose(gs, 'catch bar emptied (fish escaped)'); }
+    if (gs.playerHp <= 0)          { run.meta.result = 'loss'; return { result: lose(gs, 'out of mana'), fishPlayed: fishNo }; }
+    if (gs.fishHp >= gs.fishMaxHp) { run.meta.result = 'loss'; return { result: lose(gs, 'catch bar emptied (fish escaped)'), fishPlayed: fishNo }; }
 
     const defs = {}; (gs.deckCardData || []).forEach(d => defs[d.id] = d);
     const pr = predict(hist, { canAlternate: gs.fishMaxHp >= cfg.alternateMinHp, telegraph: gs.nextPosition });
@@ -946,7 +961,7 @@ async function playGame(n) {
     log(`     ${kind} | ${bar(gs)} | mana ${gs.playerHp} | focus ${gs.focusMeter} | fish->[${gs.fishPosition}] path=${JSON.stringify(gs.lastMovePath)} hand=[${gs.hand}]`);
   }
   run.meta.result = 'turn-cap';
-  return 'turn-cap';
+  return { result: 'turn-cap', fishPlayed: fishNo - 1 };
 }
 const lose = (gs, why) => (log(`  lost: ${why} (${bar(gs)}, mana ${gs.playerHp})`), 'loss');
 
@@ -954,18 +969,34 @@ const lose = (gs, why) => (log(`  lost: ${why} (${bar(gs)}, mana ${gs.playerHp})
 // run object -- NOT a default side effect of run() itself (test-run.js calls FB.run() directly
 // against a mocked network and must never touch the real filesystem). The CLI entry point below
 // is the only caller that passes exportRun here, so only a real CLI invocation ever writes files.
+//
+// "run N fish" means N fish TOTAL, across however many separate start_run games it takes -- a
+// loss (or daycap, or anything else) ends the CURRENT game, but never the batch itself: don't stop
+// at the first loss, keep going until the real target is met. cfg.maxGames is an optional extra
+// safety cap on the number of games attempted (null/unset = uncapped -- the daily-cap rejection
+// and the fish-total itself are the real backstops); most users never need to set it.
 async function run(onGameDone) {
   stop = false; log('start. Ctrl+C to stop');
   const out = [];
-  for (let g = 1; g <= cfg.maxGames && !stop; g++) {
+  let remaining = cfg.maxFish, g = 0;
+  while (remaining > 0 && !stop) {
+    g++;
+    if (cfg.maxGames != null && g > cfg.maxGames) {
+      log(`  reached maxGames (${cfg.maxGames}) safety cap with ${remaining} fish still short of the target -- stopping`);
+      break;
+    }
+    let outcome;
     try {
-      out.push(await playGame(g));
-      // lastRun (and therefore exportRun(), which just reads it) only ever holds the MOST RECENT
-      // playGame() call's data -- with cfg.maxGames > 1 every earlier game used to be silently
-      // overwritten and never saved. Calling onGameDone here, once per completed game, is what
-      // actually fixes it -- exporting once after the whole loop can only ever see the last one.
-      if (onGameDone) onGameDone(lastRun, g);
+      outcome = await playGame(g, remaining);
     } catch (e) { warn('error:', e.message); out.push('err'); break; }
+    out.push(outcome.result);
+    remaining -= outcome.fishPlayed;
+    // lastRun (and therefore exportRun(), which just reads it) only ever holds the MOST RECENT
+    // playGame() call's data -- with multiple games in one batch every earlier game used to be
+    // silently overwritten and never saved. Calling onGameDone here, once per completed game, is
+    // what actually fixes it -- exporting once after the whole loop can only see the last one.
+    if (onGameDone) onGameDone(lastRun, g);
+    if (outcome.result === 'daycap') { log('  stopping: daily cap reached, no more games possible today'); break; }
     await sleep(cfg.delayMs);
   }
   log('done:', out.join(', '));

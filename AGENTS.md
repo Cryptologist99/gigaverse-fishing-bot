@@ -29,11 +29,18 @@ runs (open it in any browser, no server needed).
 5. **Run one fish** (only after the user confirms they want to): `node fishbot-node.js --maxFish=1
    --address=<their address>`. If run interactively, it'll ask whether to use fishing oils this run
    — let the user answer that themselves; don't answer it for them or pass `--useOils=true` on
-   their behalf (see the oils rule below). Report what happened.
-6. **Add the result to the replay viewer.** The run writes to `runs/run-<timestamp>.json`. Read it,
-   then splice a new entry into `run-viewer.html`'s `EXAMPLE_DATA` block (the object between
+   their behalf (see the oils rule below). If asked for more than one fish, `--maxFish=N` is a
+   TOTAL — a loss doesn't stop the batch, it just starts a new game and keeps going until N fish
+   have actually been played. Let it run to completion and report once at the end; don't pause
+   partway through to report interim results or ask whether to continue.
+6. **Add the result(s) to the replay viewer.** Each completed game writes its own
+   `runs/run-<timestamp>.json` — if the batch spanned multiple games (e.g. a loss partway through
+   a `--maxFish=N>1` request), there will be more than one new file, not just the newest. For each
+   one, splice a new entry into `run-viewer.html`'s `EXAMPLE_DATA` block (the object between
    `/*__EXAMPLES__*/` and `/*__END__*/` near the top of the `<script>` tag) using that run's
-   `meta`/`gridSize`/`cards`/`turns` fields. Open it in a browser afterward to confirm it renders.
+   `meta`/`gridSize`/`cards`/`turns` fields — split a file that covers multiple fish (a win-chain
+   within one game) into one entry per fish, segmented at each `caught` boundary. Open it in a
+   browser afterward to confirm it renders.
 
 ## Hard rules — do not deviate from these
 
@@ -46,7 +53,8 @@ runs (open it in any browser, no server needed).
   run; never pass `--useOils=true` (or any oil flag) or answer that prompt on the user's behalf —
   let them decide whether and how to use oils each time.
 - **"a run" / "one run" always means ONE FISH**, not a multi-fish chain. Default to `--maxFish=1`
-  unless told otherwise.
+  unless told otherwise. **"Run N fish" means N total, no matter what** — a loss starts a fresh
+  game and keeps going rather than ending the batch; let it finish and report once at the end.
 - **Always say "catch bar", never "fish HP" or "heal"/"healing"** — in code, in the viewer, and in
   everything you say to the user. The catch bar fills toward a catch on a hit, drains toward an
   escape on a miss. (The raw API field is still named `fishHp` — don't rename it in code — but

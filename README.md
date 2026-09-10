@@ -62,10 +62,16 @@ node fishbot-node.js --maxFish=1 --address=0xYOUR_WALLET
 
 This runs exactly one fish and stops. Useful flags:
 
-- `--maxFish=N` — how many fish to chain through in one run (default 6).
-- `--maxGames=N` — how many separate `start_run` batches to run (default 1).
+- `--maxFish=N` — how many fish to play in total (default 6). A loss doesn't stop the batch early —
+  it just starts a fresh game and keeps going until N fish have actually been played, or the
+  account's daily fishing cap is hit.
+- `--maxGames=N` — optional extra safety cap on how many separate games it's allowed to start along
+  the way (default: no cap — the fish total and the daily cap are the real limits).
 - `--address=0x...` — your wallet address (**required**).
 - `--tokenFile=path` — use a different token file (for a second account — see below).
+- `--useOils=true --oilItemId=... --oilPHitThreshold=...` — skip the interactive oil prompt and use
+  oils with these settings directly (for scripted/non-interactive runs). Leave these unset to be
+  asked each time you run it in a real terminal.
 
 Each run writes a JSON log to `runs/run-<timestamp>.json` (created automatically).
 
