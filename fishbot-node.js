@@ -944,11 +944,22 @@ async function playGame(n) {
 }
 const lose = (gs, why) => (log(`  lost: ${why} (${bar(gs)}, mana ${gs.playerHp})`), 'loss');
 
-async function run() {
+// onGameDone(run, gameNo): optional, called right after EACH completed game with that game's own
+// run object -- NOT a default side effect of run() itself (test-run.js calls FB.run() directly
+// against a mocked network and must never touch the real filesystem). The CLI entry point below
+// is the only caller that passes exportRun here, so only a real CLI invocation ever writes files.
+async function run(onGameDone) {
   stop = false; log('start. Ctrl+C to stop');
   const out = [];
   for (let g = 1; g <= cfg.maxGames && !stop; g++) {
-    try { out.push(await playGame(g)); } catch (e) { warn('error:', e.message); out.push('err'); break; }
+    try {
+      out.push(await playGame(g));
+      // lastRun (and therefore exportRun(), which just reads it) only ever holds the MOST RECENT
+      // playGame() call's data -- with cfg.maxGames > 1 every earlier game used to be silently
+      // overwritten and never saved. Calling onGameDone here, once per completed game, is what
+      // actually fixes it -- exporting once after the whole loop can only ever see the last one.
+      if (onGameDone) onGameDone(lastRun, g);
+    } catch (e) { warn('error:', e.message); out.push('err'); break; }
     await sleep(cfg.delayMs);
   }
   log('done:', out.join(', '));
@@ -984,7 +995,7 @@ if (require.main === module) {
     process.exit(1);
   }
   process.on('SIGINT', () => { stop = true; log('stopping...'); });
-  run().then(() => exportRun()).catch(e => { warn('fatal:', e.message); process.exit(1); });
+  run(exportRun).catch(e => { warn('fatal:', e.message); process.exit(1); });
 }
 
 module.exports = { run, stop: () => { stop = true; }, config: o => Object.assign(cfg, o),
