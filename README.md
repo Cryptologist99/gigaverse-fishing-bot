@@ -8,6 +8,9 @@ The bot picks cards and positions a targeting reticle each turn to predict where
 manages your mana/focus budget, redraws when the odds are bad, and can chain through multiple fish
 automatically, drafting a new card after each catch.
 
+> **Using an AI coding agent to try this out?** Point it at
+> [`AGENTS.md`](AGENTS.md) — it has everything needed to set up and run this end to end.
+
 ## What's in this repo
 
 | File | What it does |
