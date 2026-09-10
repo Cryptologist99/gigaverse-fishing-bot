@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head></head>
+<body>
+<meta charset="utf-8">
+<title>Dendren Pond Replay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root{
+    --bg:#eef3f4; --panel:#ffffff; --panel2:#f5f8f9; --line:#d3dde0;
+    --ink:#0f2531; --muted:#5c7180; --faint:#8aa0ac;
+    --accent:#0f7d8c;                 /* deep teal for structure */
+    --sonar:#0c9aad;                  /* bobber */
+    --fish:#3f74d6;                   /* fish token */
+    --hit:#1f9e6b; --hitbg:rgba(31,158,107,.16);
+    --crit:#c98a00; --critbg:rgba(242,183,5,.20);
+    --miss:#d94b48; --missbg:rgba(217,75,72,.14);
+    --shadow:0 1px 2px rgba(15,37,49,.06),0 8px 24px rgba(15,37,49,.07);
+    --r:14px;
+  }
+  @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+    --bg:#0a141c; --panel:#0f1e29; --panel2:#132735; --line:#223a49;
+    --ink:#e2edf2; --muted:#8ba3b1; --faint:#5f7987;
+    --accent:#39c0d0; --sonar:#2ec5d3; --fish:#7aa5ff;
+    --hit:#3ddc8f; --hitbg:rgba(61,220,143,.15);
+    --crit:#f2b705; --critbg:rgba(242,183,5,.16);
+    --miss:#ef6461; --missbg:rgba(239,100,97,.15);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 30px rgba(0,0,0,.35);
+  }}
+  :root[data-theme="dark"]{
+    --bg:#0a141c; --panel:#0f1e29; --panel2:#132735; --line:#223a49;
+    --ink:#e2edf2; --muted:#8ba3b1; --faint:#5f7987;
+    --accent:#39c0d0; --sonar:#2ec5d3; --fish:#7aa5ff;
+    --hit:#3ddc8f; --hitbg:rgba(61,220,143,.15);
+    --crit:#f2b705; --critbg:rgba(242,183,5,.16);
+    --miss:#ef6461; --missbg:rgba(239,100,97,.15);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 12px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:Chivo,system-ui,sans-serif;line-height:1.5;
+    -webkit-font-smoothing:antialiased;padding:clamp(14px,3vw,34px)}
+  .wrap{max-width:1080px;margin:0 auto}
+  .mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px;margin-bottom:6px}
+  h1{font-size:clamp(22px,3.4vw,30px);font-weight:800;letter-spacing:-.02em;margin:0;text-wrap:balance}
+  .eyebrow{font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent);font-weight:600}
+  .picker{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  select{font-family:"JetBrains Mono",monospace;font-size:13px;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:9px;padding:7px 11px;cursor:pointer;box-shadow:var(--shadow)}
+  select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  select optgroup{font-family:"JetBrains Mono",monospace;font-weight:600;font-style:normal;color:var(--muted)}
+  select option{font-family:"JetBrains Mono",monospace;color:var(--ink)}
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 18px}
+  .tag{font-family:"JetBrains Mono",monospace;font-size:12px;background:var(--panel);border:1px solid var(--line);
+    border-radius:999px;padding:5px 11px;color:var(--muted);box-shadow:var(--shadow)}
+  .tag b{color:var(--ink);font-weight:600}
+  .tag.win b{color:var(--hit)} .tag.loss b{color:var(--miss)}
+
+  .grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:18px;align-items:start}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+  .board-card{padding:16px}
+  svg.board{width:100%;height:auto;display:block;touch-action:none}
+  .cap{font-size:12px;color:var(--faint);text-align:center;margin-top:8px;font-family:"JetBrains Mono",monospace}
+
+  .panel{padding:16px 16px 18px}
+  .panel h2{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 12px;font-weight:600;font-family:"JetBrains Mono",monospace}
+  .turnhead{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .badge{font-family:"JetBrains Mono",monospace;font-weight:600;font-size:12px;padding:4px 10px;border-radius:8px;border:1px solid transparent}
+  .badge.HIT{color:var(--hit);background:var(--hitbg);border-color:var(--hit)}
+  .badge.CRIT{color:var(--crit);background:var(--critbg);border-color:var(--crit)}
+  .badge.miss{color:var(--miss);background:var(--missbg);border-color:var(--miss)}
+  .badge.pass{color:var(--muted);background:var(--panel2);border-color:var(--line)}
+  .badge.redraw{color:var(--sonar);background:color-mix(in srgb,var(--sonar) 14%,transparent);border-color:var(--sonar)}
+  .tnum{font-family:"JetBrains Mono",monospace;color:var(--faint);font-size:13px}
+
+  .rows{display:flex;flex-direction:column;gap:12px}
+  .row{display:grid;grid-template-columns:64px 1fr auto;align-items:center;gap:10px}
+  .row .k{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .bar{height:9px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);overflow:hidden}
+  .bar > i{display:block;height:100%;border-radius:6px;transition:width .35s ease}
+  .fill-catch{background:linear-gradient(90deg,var(--hit),color-mix(in srgb,var(--hit) 55%,var(--sonar)))}
+  .fill-mana{background:var(--sonar)} .fill-focus{background:var(--accent)}
+  .v{font-family:"JetBrains Mono",monospace;font-size:13px;color:var(--ink);min-width:44px;text-align:right}
+  .dots{display:flex;gap:4px} .dot{width:12px;height:12px;border-radius:50%;border:1px solid var(--line);background:var(--panel2)}
+  .dot.on-mana{background:var(--sonar);border-color:var(--sonar)} .dot.on-focus{background:var(--accent);border-color:var(--accent)}
+
+  .detail{margin-top:16px;display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:center;
+    border-top:1px solid var(--line);padding-top:14px}
+  .stencil{display:grid;grid-template-columns:repeat(3,16px);grid-template-rows:repeat(3,16px);gap:3px}
+  .sq{width:16px;height:16px;border-radius:3px;background:var(--panel2);border:1px solid var(--line)}
+  .sq.h{background:var(--hitbg);border-color:var(--hit)} .sq.c{background:var(--critbg);border-color:var(--crit)}
+  .dtext{font-size:13px;color:var(--muted)} .dtext b{color:var(--ink);font-weight:600}
+  .dtext .why{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--faint)}
+
+  .controls{display:flex;align-items:center;gap:10px;margin:18px 0 10px;flex-wrap:wrap}
+  button{font-family:Chivo,sans-serif;font-size:14px;font-weight:600;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:10px;padding:8px 14px;cursor:pointer;box-shadow:var(--shadow)}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.primary:hover{filter:brightness(1.06);color:#fff}
+  input[type=range]{flex:1;min-width:140px;accent-color:var(--accent)}
+  .timeline{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+  .chip{font-family:"JetBrains Mono",monospace;font-size:12px;padding:5px 9px;border-radius:8px;cursor:pointer;
+    border:1px solid var(--line);background:var(--panel);color:var(--muted);display:flex;gap:6px;align-items:center}
+  .chip:hover{border-color:var(--accent)}
+  .chip.active{border-color:var(--accent);color:var(--ink);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 25%,transparent)}
+  .chip .pip{width:8px;height:8px;border-radius:50%}
+  .pip.HIT{background:var(--hit)} .pip.CRIT{background:var(--crit)} .pip.miss{background:var(--miss)} .pip.pass{background:var(--faint)} .pip.redraw{background:var(--sonar)}
+
+  .legend{display:flex;flex-wrap:wrap;gap:12px 18px;margin-top:16px;font-size:12.5px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:14px;height:14px;border-radius:4px;border:1px solid var(--line)}
+  .handpanel{padding:14px 16px 16px;margin-top:18px}
+  .handpanel h2{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin:0 0 12px;font-weight:600;font-family:"JetBrains Mono",monospace}
+  .handpanel h2 span{color:var(--faint);text-transform:none;letter-spacing:0}
+  .handrow{display:flex;gap:12px;flex-wrap:wrap}
+  .handcard{position:relative;display:flex;flex-direction:column;align-items:center;gap:6px;
+    padding:11px 12px 9px;border:1px solid var(--line);border-radius:12px;background:var(--panel2);min-width:86px}
+  .handcard.played{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 28%,transparent);background:var(--panel)}
+  .handcard.covers{border-color:var(--hit)}
+  .handcard.unaffordable{opacity:.45}
+  .stencil.sm{grid-template-columns:repeat(3,15px);grid-template-rows:repeat(3,15px)}
+  .stencil.sm .sq{width:15px;height:15px}
+  .hclab{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--ink);display:flex;gap:6px;align-items:center}
+  .hclab .mana{color:var(--sonar)}
+  .hcvals{display:flex;align-items:baseline;gap:4px;font-family:"JetBrains Mono",monospace;font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .hcvals .sl{color:var(--faint)}
+  .hcvals .v-pos{color:var(--hit)} .hcvals .v-neg{color:var(--miss)}
+  .hceval{display:flex;flex-direction:column;align-items:center;gap:2px;font-family:"JetBrains Mono",monospace;
+    font-size:10.5px;color:var(--faint);border-top:1px dashed var(--line);padding-top:5px;width:100%}
+  .hceval .e-win{font-size:13px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+  .hceval .e-sub{display:flex;gap:6px}
+  .hceval .e-hit{color:var(--hit)} .hceval .e-crit{color:var(--crit)}
+  .hcnote{font-family:"JetBrains Mono",monospace;font-size:10px;color:var(--miss);text-transform:uppercase;letter-spacing:.06em}
+  .playedtag{font-family:"JetBrains Mono",monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--accent);position:absolute;top:-8px;background:var(--panel);padding:1px 6px;border:1px solid var(--accent);border-radius:6px}
+  footer{margin-top:22px;color:var(--faint);font-size:12px;text-align:center}
+  @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <div class="eyebrow">Gigaverse Fishing · Bot Replay</div>
+      <h1>Dendren Pond Replay</h1>
+    </div>
+    <div class="picker">
+      <select id="example" aria-label="fish"></select>
+    </div>
+  </header>
+  <div class="meta" id="meta"></div>
+
+  <div class="grid">
+    <div class="card board-card">
+      <svg class="board" viewBox="0 0 400 400" id="board" role="img" aria-label="Fishing grid replay"></svg>
+      <div class="cap" id="boardcap"></div>
+    </div>
+
+    <div class="card panel">
+      <div class="turnhead">
+        <h2 style="margin:0">Turn <span class="tnum" id="turnno"></span></h2>
+        <span class="badge" id="result"></span>
+      </div>
+      <div class="rows">
+        <div class="row"><span class="k">Catch</span><div class="bar"><i class="fill-catch" id="b-catch"></i></div><span class="v" id="v-catch"></span></div>
+        <div class="row"><span class="k">Mana</span><div class="dots" id="d-mana"></div><span class="v" id="v-mana"></span></div>
+        <div class="row"><span class="k">Focus</span><div class="dots" id="d-focus"></div><span class="v" id="v-focus"></span></div>
+      </div>
+      <div class="detail">
+        <div class="stencil" id="stencil" title="the card's 3×3 shape"></div>
+        <div class="dtext" id="detailtext"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card handpanel">
+    <h2>Hand this turn <span id="handnote"></span></h2>
+    <div class="handrow" id="hand"></div>
+  </div>
+
+  <div class="controls">
+    <button id="prev" aria-label="Previous turn">‹ Prev</button>
+    <button id="play" class="primary">▶ Play</button>
+    <button id="next" aria-label="Next turn">Next ›</button>
+    <input type="range" id="scrub" min="0" value="0" step="1" aria-label="Turn scrubber">
+  </div>
+  <div class="timeline" id="timeline"></div>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--hitbg);border-color:var(--hit)"></i> hit square</span>
+    <span><i class="sw" style="background:var(--critbg);border-color:var(--crit)"></i> gold / crit</span>
+    <span><i class="sw" style="border-style:dashed;border-color:var(--accent)"></i> predicted next</span>
+    <span><i class="sw" style="border-radius:50%;border-color:var(--sonar);border-width:2px"></i> bobber</span>
+    <span><i class="sw" style="border-radius:50%;background:var(--fish);border-color:var(--fish)"></i> fish (after move)</span>
+    <span><i class="sw" style="border-radius:50%;border-color:var(--fish);border-style:dashed"></i> fish (before)</span>
+  </div>
+
+  <footer>Grid zones = (row−1)·4 + col · cards center on the bobber · focus moves it 1 square each</footer>
+</div>
+
+<script>
+/* ---- embedded examples: generated by running the REAL bot engine (predict + decide)
+       against three scripted fish (1-move / 2-move / alternating) and the player's actual
+       deck (see sim.js), so predicted squares and plays are exactly what the bot computes. */
+const EXAMPLE_DATA = /*__EXAMPLES__*/{"examples":[]}/*__END__*/;
+const EXAMPLES = EXAMPLE_DATA.examples;
+const SAMPLE = EXAMPLES[0];
+
+const $=s=>document.querySelector(s), NS="http://www.w3.org/2000/svg";
+const inb=(r,c)=>r>=1&&r<=4&&c>=1&&c<=4;
+const zStencil=(z,fr,fc)=>[fr+Math.floor((z-1)/3)-1, fc+((z-1)%3)-1];   // zone -> board cell for a stencil centered at [fr,fc]
+let RUN=null, idx=0, timer=null;
+
+// Display name for the picker/meta: wins show the fish species, losses show a chronological
+// "Loss N" (per meta.lossNum, computed once when the data was built) instead of the literal
+// string "null" that meta.fish holds for a loss.
+const displayName = m => m.result==='loss' ? `Loss ${m.lossNum||'?'}` : (m.fish || '—');
+
+// Account sort order within a day group (fixed, not alphabetical -- puts the two real accounts
+// before the synthetic/demo bucket, main before bot to match how it's usually discussed).
+const ACCOUNT_ORDER = ['Account 1', 'Account 2', 'Synthetic / demo (sim.js)'];
+function populatePicker(){
+  const sel=$("#example"); sel.innerHTML="";
+  // Group by game-day (18:00 UTC - 18:00 UTC window, matching the daily-catch-cap reset; falls
+  // back to "Undated" for older examples recorded before real timestamps were tracked) AND by
+  // account -- HTML <select> has no nested optgroups, so the two are combined into one flat
+  // group label. Newest day first, Undated last; within a day, Main before Bot before
+  // Synthetic/demo; within each group, examples are already newest-first (EXAMPLE_DATA's own
+  // ordering).
+  const byGroup = new Map();
+  EXAMPLES.forEach((r,i)=>{
+    const day=r.meta.day||'Undated';
+    const account=r.meta.account||'Account 1';
+    const key=day+'||'+account;
+    if(!byGroup.has(key)) byGroup.set(key,{day,account,idx:[]});
+    byGroup.get(key).idx.push(i);
+  });
+  const groups=[...byGroup.values()].sort((a,b)=>{
+    if(a.day!==b.day){ if(a.day==='Undated') return 1; if(b.day==='Undated') return -1; return b.day.localeCompare(a.day); }
+    return ACCOUNT_ORDER.indexOf(a.account)-ACCOUNT_ORDER.indexOf(b.account);
+  });
+  groups.forEach(({day,account,idx})=>{
+    const og=document.createElement("optgroup"); og.label=(day==='Undated'?'Undated':day)+' — '+account;
+    idx.forEach(i=>{
+      const r=EXAMPLES[i]; const o=document.createElement("option"); o.value=i;
+      o.textContent=`#${r.meta.num}  ·  ${displayName(r.meta)}  ·  ${(r.meta.result||'').toUpperCase()}`;
+      og.appendChild(o);
+    });
+    sel.appendChild(og);
+  });
+  sel.onchange=e=>{ stopPlay(); setRun(EXAMPLES[+e.target.value]); };
+}
+function setRun(run){
+  RUN=run; idx=0;
+  const ei=EXAMPLES.indexOf(run);
+  $("#example").value = ei>=0 ? ei : "";
+  renderMeta(); buildTimeline(); $("#scrub").max=run.turns.length-1; go(0);
+}
+function renderMeta(){
+  const m=RUN.meta, t=RUN.turns;
+  const cls = m.result==="win"?"win":(m.result==="loss"?"loss":"");
+  // Catch bar always starts with SOME progress already made (varies fish to fish, not a fixed
+  // number) -- read the real starting value off this fish's own first turn instead of a
+  // hardcoded guess.
+  const startBar = t.length ? (m.fishMaxHp - t[0].fishHpBefore) : null;
+  $("#meta").innerHTML=[
+    `<span class="tag mono">#${m.num}</span>`,
+    m.account?`<span class="tag">${m.account}</span>`:"",
+    `<span class="tag ${cls}">result <b>${m.result||"—"}</b></span>`,
+    m.result==='loss' ? `<span class="tag">loss <b>#${m.lossNum||'?'}</b></span>` : (m.fish?`<span class="tag">fish <b>${m.fish}</b></span>`:""),
+    m.fishMaxHp?`<span class="tag">catch bar target <b>${m.fishMaxHp}</b>${startBar!=null?` · starts <b>${startBar}</b> filled`:''}</span>`:"",
+    (m.canAlt!=null)?`<span class="tag">${m.canAlt?"<b>may alternate</b>":"<b>can't alternate</b>"}</span>`:"",
+    `<span class="tag">turns <b>${t.length}</b></span>`
+  ].join("");
+}
+function buildTimeline(){
+  const tl=$("#timeline"); tl.innerHTML="";
+  RUN.turns.forEach((t,i)=>{
+    const c=document.createElement("button"); c.className="chip"; c.dataset.i=i;
+    c.innerHTML=`<span class="pip ${t.result}"></span>T${t.n+1}`;
+    c.onclick=()=>{stopPlay();go(i);}; tl.appendChild(c);
+  });
+}
+
+const CELL=88, PAD=16, GAP=(400-2*PAD-4*CELL)/3; // spacing for a 4x4 board in 400 viewBox
+function cx(col){ return PAD + (col-1)*(CELL+GAP) + CELL/2; }
+function cy(row){ return PAD + (row-1)*(CELL+GAP) + CELL/2; }
+function rectXY(r,c){ return [PAD+(c-1)*(CELL+GAP), PAD+(r-1)*(CELL+GAP)]; }
+function el(tag,attrs){ const e=document.createElementNS(NS,tag); for(const k in attrs) e.setAttribute(k,attrs[k]); return e; }
+
+function drawBoard(t){
+  const b=$("#board"); b.innerHTML="";
+  const keyed=(arr)=>new Set((arr||[]).map(c=>c[0]+","+c[1]));
+  const hit=keyed(t.covered), crit=keyed(t.critCells), pred=keyed(t.predicted);
+  for(let r=1;r<=4;r++)for(let c=1;c<=4;c++){
+    const [x,y]=rectXY(r,c); const k=r+","+c;
+    let fill="var(--panel2)", stroke="var(--line)", sw=1, dash="";
+    if(crit.has(k)){fill="var(--critbg)";stroke="var(--crit)";sw=2;}
+    else if(hit.has(k)){fill="var(--hitbg)";stroke="var(--hit)";sw=2;}
+    b.appendChild(el("rect",{x,y,width:CELL,height:CELL,rx:10,fill,stroke,"stroke-width":sw}));
+    if(pred.has(k)){   // dashed outline on EVERY predicted next-move square, even hit/crit cells or where the fish landed
+      b.appendChild(el("rect",{x:x+3,y:y+3,width:CELL-6,height:CELL-6,rx:8,fill:"none",
+        stroke:"var(--accent)","stroke-width":2,"stroke-dasharray":"5 5"}));
+    }
+    // zone number, faint
+    const z=(r-1)*4+c; const tn=el("text",{x:x+8,y:y+18,fill:"var(--faint)","font-size":11,"font-family":"JetBrains Mono, monospace"}); tn.textContent=z; b.appendChild(tn);
+  }
+  // bobber move arrow (if it moved) + reticle
+  if(t.moveCost>0 && t.bobberFrom){
+    b.appendChild(line(cx(t.bobberFrom[1]),cy(t.bobberFrom[0]),cx(t.bobber[1]),cy(t.bobber[0]),"var(--sonar)","4 4"));
+    reticle(b,t.bobberFrom,0.28);
+  }
+  reticle(b,t.bobber,1);
+  // fish path — the fish moves every turn, a 1- or 2-step orthogonal walk.
+  // dashed circle = where it STARTED, solid circle = where it ENDED, arrow on the line = direction.
+  const fb=t.fishBefore;
+  const zc=z=>[Math.floor((z-1)/4)+1,((z-1)%4)+1];
+  const steps = t.path ? t.path.slice() : (t.lastMovePath ? t.lastMovePath.map(zc) : (t.fishAfter?[t.fishAfter]:[]));
+  const pts=[fb,...steps];
+  for(let i=0;i<pts.length-1;i++){
+    const A=pts[i], Z=pts[i+1];
+    b.appendChild(line(cx(A[1]),cy(A[0]),cx(Z[1]),cy(Z[0]),"var(--fish)","4 4",false));   // dashed line, no endpoint arrow
+    arrowMid(b,cx(A[1]),cy(A[0]),cx(Z[1]),cy(Z[0]),"var(--fish)");                          // direction arrow at the midpoint (visible, not under the tokens)
+    if(i<pts.length-2) b.appendChild(el("circle",{cx:cx(Z[1]),cy:cy(Z[0]),r:3.5,fill:"var(--fish)",opacity:.5}));  // intermediate step
+  }
+  const fa=t.fishAfter||fb;
+  if(pts.length>1) fishToken(b,fb,false);   // START: dashed hollow
+  fishToken(b,fa,true);                     // END: solid filled
+}
+function arrowMid(b,x1,y1,x2,y2,color){     // arrowhead at the segment midpoint, pointing x1->x2
+  const mx=(x1+x2)/2, my=(y1+y2)/2, ang=Math.atan2(y2-y1,x2-x1), s=11;
+  b.appendChild(el("line",{x1:mx,y1:my,x2:mx-s*Math.cos(ang-.5),y2:my-s*Math.sin(ang-.5),stroke:color,"stroke-width":3.5,"stroke-linecap":"round"}));
+  b.appendChild(el("line",{x1:mx,y1:my,x2:mx-s*Math.cos(ang+.5),y2:my-s*Math.sin(ang+.5),stroke:color,"stroke-width":3.5,"stroke-linecap":"round"}));
+}
+function line(x1,y1,x2,y2,color,dash,arrow){
+  const g=el("g",{}); const L=el("line",{x1,y1,x2,y2,stroke:color,"stroke-width":3,"stroke-linecap":"round"});
+  if(dash)L.setAttribute("stroke-dasharray",dash); g.appendChild(L);
+  if(arrow!==false){
+    const ang=Math.atan2(y2-y1,x2-x1), s=9;
+    g.appendChild(el("line",{x1:x2,y1:y2,x2:x2-s*Math.cos(ang-.5),y2:y2-s*Math.sin(ang-.5),stroke:color,"stroke-width":3,"stroke-linecap":"round"}));
+    g.appendChild(el("line",{x1:x2,y1:y2,x2:x2-s*Math.cos(ang+.5),y2:y2-s*Math.sin(ang+.5),stroke:color,"stroke-width":3,"stroke-linecap":"round"}));
+  }
+  return g;
+}
+function reticle(b,cell,op){
+  const x=cx(cell[1]),y=cy(cell[0]);
+  b.appendChild(el("circle",{cx:x,cy:y,r:26,fill:"none",stroke:"var(--sonar)","stroke-width":3,opacity:op}));
+  b.appendChild(el("circle",{cx:x,cy:y,r:3,fill:"var(--sonar)",opacity:op}));
+  for(const d of [[-34,0,-20,0],[34,0,20,0],[0,-34,0,-20],[0,34,0,20]])
+    b.appendChild(el("line",{x1:x+d[0],y1:y+d[1],x2:x+d[2],y2:y+d[3],stroke:"var(--sonar)","stroke-width":2,opacity:op}));
+}
+function fishToken(b,cell,solid){          // solid=true -> ENDED here (bold); false -> STARTED here (faint dashed)
+  const x=cx(cell[1]),y=cy(cell[0]);
+  const g=el("g",{opacity:solid?1:0.55});
+  const c=el("circle",{cx:x,cy:y,r:solid?15:13,stroke:"var(--fish)","stroke-width":solid?3:2.5,
+    fill:solid?"var(--fish)":"none"});
+  if(!solid)c.setAttribute("stroke-dasharray","4 4");
+  g.appendChild(c);
+  const tx=el("text",{x,y:y+4,fill:solid?"#fff":"var(--fish)","text-anchor":"middle","font-size":13,"font-family":"Chivo, sans-serif","font-weight":800});
+  tx.textContent="⟡"; g.appendChild(tx); b.appendChild(g);
+}
+
+function drawStencil(card){
+  const s=$("#stencil"); s.innerHTML="";
+  const hit=new Set((card&&card.hit)||[]), crit=new Set((card&&card.crit)||[]);
+  for(let z=1;z<=9;z++){ const d=document.createElement("div"); d.className="sq"+(crit.has(z)?" c":hit.has(z)?" h":""); s.appendChild(d); }
+}
+
+function drawHand(t){
+  const host=$("#hand"); host.innerHTML="";
+  const predSet=new Set((t.predicted||[]).map(c=>c[0]+","+c[1]));
+  const focusBudget=(t.focus||0)+(t.moveCost||0);         // focus available before this turn's move
+  const evalByIdx=new Map((t.handEval||[]).map(e=>[e.handIdx,e]));
+  (t.hand||[]).forEach((id,i)=>{
+    const def=(RUN.cards&&RUN.cards[id]) || (i===t.playedHandIdx?t.card:{hit:[],crit:[],mana:1});
+    const played=i===t.playedHandIdx;
+    const he=evalByIdx.get(i);
+    // could this card have covered a predicted square from any bobber it could afford to reach?
+    let covers=false;
+    for(let fr=1;fr<=4&&!covers;fr++)for(let fc=1;fc<=4&&!covers;fc++){
+      if(Math.abs(fr-t.bobberFrom[0])+Math.abs(fc-t.bobberFrom[1])>focusBudget) continue;
+      for(const z of [...(def.hit||[]),...(def.crit||[])]){ const c=zStencil(z,fr,fc); if(inb(c[0],c[1])&&predSet.has(c[0]+","+c[1])){covers=true;break;} }
+    }
+    const unaffordable=he&&he.affordable===false;
+    const card=document.createElement("div");
+    card.className="handcard"+(played?" played":covers?" covers":"")+(unaffordable?" unaffordable":"");
+    const st=document.createElement("div"); st.className="stencil sm";
+    const hit=new Set(def.hit||[]),crit=new Set(def.crit||[]);
+    for(let z=1;z<=9;z++){const d=document.createElement("div");d.className="sq"+(crit.has(z)?" c":hit.has(z)?" h":"");st.appendChild(d);}
+    const lab=document.createElement("div"); lab.className="hclab"; lab.innerHTML=`<span>#${id}</span><span class="mana">◆${def.mana??1}</span>`;
+    card.appendChild(st); card.appendChild(lab);
+    // raw API values: how much this card's hit/miss/crit actually moves the catch bar.
+    // Colored by sign (not by hit/miss/crit role) so it reads at a glance: green = raises the
+    // catch bar toward a catch, red = lowers it back toward an escape.
+    if(def.hitAmt!==undefined){
+      const signed=v=>`<span class="${v>=0?'v-pos':'v-neg'}">${v>=0?'+':''}${v}</span>`;
+      const parts=[signed(def.hitAmt), signed(def.missAmt)];
+      if((def.crit||[]).length) parts.push(signed(def.critAmt));
+      const vals=document.createElement("div"); vals.className="hcvals";
+      vals.innerHTML=parts.join('<span class="sl"> / </span>');
+      card.appendChild(vals);
+    }
+    // computed this-turn value: real engine win probability / hit% / crit% for THIS card, at its
+    // own best reachable position -- not just "could it geometrically reach a predicted square"
+    if(he&&he.playable){
+      const ev=document.createElement("div"); ev.className="hceval";
+      let sub=`<span class="e-hit">${Math.round(he.pHit*100)}% hit</span>`;
+      if(he.critChance>0) sub+=`<span class="e-crit">${Math.round(he.critChance*100)}% crit</span>`;
+      ev.innerHTML=`<span class="e-win">${Math.round(he.val*100)}% win</span><span class="e-sub">${sub}</span>`;
+      card.appendChild(ev);
+    } else if(unaffordable){
+      const note=document.createElement("div"); note.className="hcnote"; note.textContent="can't afford";
+      card.appendChild(note);
+    }
+    if(played){const b=document.createElement("div");b.className="playedtag";b.textContent="played";card.appendChild(b);}
+    host.appendChild(card);
+  });
+  $("#handnote").textContent = t.result==='redraw'
+    ? `· ${(t.hand||[]).length} discarded & redrawn (−${t.redrawCost} mana)`
+    : `· ${(t.hand||[]).length} in hand · win% = real engine lookahead if played now · green border = could've hit a predicted square`;
+}
+
+// Catch-detail chips: quality/rarity/bonus-flags/Sediment reward for this catch, when the run
+// data has it (only catches recorded 2026-09-10 onward carry this -- older examples show nothing
+// extra here, which is expected, not a bug).
+function catchDetailsHtml(cd){
+  if(!cd) return "";
+  const bits=[`quality ${cd.quality}`, `rarity ${cd.rarity}`];
+  if(cd.plusOneQuality) bits.push("+1 quality");
+  if(cd.plusOneRarity) bits.push("+1 rarity");
+  if(cd.doubled) bits.push("doubled");
+  if(cd.newFish) bits.push("new species");
+  if(cd.newQuality) bits.push("new quality record");
+  bits.push(`+${cd.sediment||0} Sediment`);
+  return ` <span class="mono" style="color:var(--faint)">(${bits.join(" · ")})</span>`;
+}
+function go(i){
+  idx=Math.max(0,Math.min(RUN.turns.length-1,i));
+  const t=RUN.turns[idx], m=RUN.meta;
+  drawBoard(t); drawStencil(t.card); drawHand(t);
+  $("#turnno").textContent="T"+(t.n+1);
+  const redraw = t.result==='redraw';
+  const res=$("#result"); res.className="badge "+t.result; res.textContent=redraw?"REDRAW":t.result.toUpperCase();
+  $("#boardcap").textContent=`fish [${t.fishBefore}] → [${t.fishAfter}]  ·  bobber [${t.bobber}]  ·  `+(redraw?`redrew (${t.redrawCost}◆)`:`card #${t.card.id}`);
+  // bars — use this turn's fish max HP (fish in a chain differ), not the first fish's
+  const fmax=t.fishMaxHp||m.fishMaxHp;
+  const caught=fmax-t.fishHp;
+  $("#b-catch").style.width=Math.max(0,Math.min(100,caught/fmax*100))+"%";
+  $("#v-catch").textContent=caught+"/"+fmax;
+  dots("#d-mana",t.mana,m.manaMax,"mana"); $("#v-mana").textContent=t.mana+"/"+m.manaMax;
+  dots("#d-focus",t.focus,m.focusMax,"focus"); $("#v-focus").textContent=t.focus+"/"+m.focusMax;
+  // detail text
+  const move = t.moveCost>0 ? `moved bobber ${t.moveCost} (−${t.moveCost} focus)` : "bobber held";
+  const predtxt = t.predictedExact ? `predicted <b>[${t.predicted[0]}]</b> exactly` : `${(t.predicted||[]).length} candidate squares`;
+  if(redraw){
+    // "scouting" only makes sense while the fish's movement is still unknown; once the regime is
+    // locked a redraw reveals nothing, so describe it honestly as swapping out a weak hand.
+    const blind = /unknown|could still alternate|cover 1\+2/i.test(t.why||"");
+    const rationale = blind
+      ? `scouting the fish's move without risking a miss.`
+      : `swapping out a weak hand — the fish's pattern is already known, so this only trades for fresh cards.`;
+    $("#detailtext").innerHTML=
+      `<b style="color:var(--sonar)">Redrew the hand</b> <span class="mono">(−${t.redrawCost} mana)</span> instead of a weak play —<br>`+
+      `${rationale} ${predtxt} <span class="why">· ${t.why||""}</span>`;
+  } else {
+    $("#detailtext").innerHTML=
+      `Played <b>card #${t.card.id}</b> <span class="mono">(${t.card.mana||1} mana)</span>, ${move}`+
+      (t.pHit!=null?` · <span class="mono">${Math.round(t.pHit*100)}% hit</span>`:``)+`.<br>`+
+      `${predtxt} <span class="why">· ${t.why||""}</span><br>`+
+      `Result: <b style="color:var(--${t.result==='miss'?'miss':t.result==='CRIT'?'crit':'hit'})">${t.result.toUpperCase()}</b>`+
+      (t.result==='miss'? ` — fish slipped off the hit squares (catch bar dropped).` : ` on square [${t.fishAfter}].`)+
+      (t.caught? ` <b style="color:var(--hit)">· 🎣 caught ${t.caught}</b>${catchDetailsHtml(t.catchDetails)}${t.draft?' <b style="color:var(--hit)">→ +card '+t.draft.picked+'</b>':''}` : ``);
+  }
+  // scrub + chips
+  $("#scrub").value=idx;
+  document.querySelectorAll(".chip").forEach((c,i)=>c.classList.toggle("active",i===idx));
+}
+function dots(sel,val,max,kind){
+  const host=$(sel); host.innerHTML="";
+  for(let i=0;i<max;i++){ const d=document.createElement("div"); d.className="dot"+(i<val?" on-"+kind:""); host.appendChild(d); }
+}
+
+function stopPlay(){ if(timer){clearInterval(timer);timer=null;$("#play").textContent="▶ Play";$("#play").classList.add("primary");} }
+function playPause(){
+  if(timer){ stopPlay(); return; }
+  $("#play").textContent="⏸ Pause"; $("#play").classList.remove("primary");
+  if(idx>=RUN.turns.length-1) go(0);
+  timer=setInterval(()=>{ if(idx>=RUN.turns.length-1){ stopPlay(); return; } go(idx+1); }, 1100);
+}
+$("#prev").onclick=()=>{stopPlay();go(idx-1);};
+$("#next").onclick=()=>{stopPlay();go(idx+1);};
+$("#play").onclick=playPause;
+$("#scrub").oninput=e=>{stopPlay();go(+e.target.value);};
+document.addEventListener("keydown",e=>{ if(e.key==="ArrowLeft"){stopPlay();go(idx-1);} if(e.key==="ArrowRight"){stopPlay();go(idx+1);} if(e.key===" "){e.preventDefault();playPause();}});
+
+if (!EXAMPLES.length) {
+  document.querySelector('.wrap').innerHTML = '<header><div><div class="eyebrow">Gigaverse Fishing · Bot Replay</div><h1>Dendren Pond Replay</h1></div></header>' +
+    '<div class="card panel" style="margin-top:24px;text-align:center;padding:48px 24px">' +
+    '<p style="color:var(--muted);font-size:15px;margin:0 0 10px">No runs recorded yet.</p>' +
+    '<p style="color:var(--faint);font-size:13px;margin:0">Run the bot, then add its result here to see a replay:<br><code style="font-family:monospace">node fishbot-node.js --maxFish=1 --address=0xYOUR_WALLET</code></p>' +
+    '</div>';
+} else {
+  populatePicker();
+  setRun(SAMPLE);
+}
+</script>
+
+
+</body>
+</html>

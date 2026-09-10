@@ -1,0 +1,9 @@
+# session tokens -- never commit these, they're per-user credentials
+token.txt
+token-*.txt
+!test-token.txt
+
+# per-user run history
+runs/
+
+node_modules/
