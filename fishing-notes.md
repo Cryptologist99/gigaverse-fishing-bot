@@ -58,6 +58,20 @@ lastMovePath[zoneA,zoneB] (0-indexed 4x4 zones), caughtFish{...}, deckCardData[c
   - always-2: two orthogonal steps, but NEVER back to the square it started this turn (net manhattan 0 excluded; net 2 only).
   - alternating 1-2-1-2 (only ≥21-HP fish — confirmed by user 2026-09-09: 21-HP fish themselves can
     alternate, not just fish strictly above 21; matches `cfg.alternateMinHp: 21` in the code).
+  - **3-step moves (only ≥29-HP fish — confirmed live 2026-09-10, matches `cfg.threeMoveMinHp: 29`):**
+    a fish this size CAN take a 3-orthogonal-step move in one turn. NOT every ≥29hp fish uses this —
+    only 2 of 9 real 29hp encounters showed it at all; the rest were ordinary always-1/always-2/
+    alternating-1-2, identical to smaller fish. The two confirmed 3-capable fish each locked into a
+    clean, perfectly regular alternation once measured correctly: one alternated 1<->3, the other
+    2<->3 — never all three, never a fixed "always-3" (sample size is tiny, 2 real fish; revisit as
+    more are seen). **The real signal is PATH LENGTH (the API's own `lastMovePath.length`), not net
+    Manhattan displacement between positions** — a 3-step path can double back and land only 1 or 2
+    squares from where it started, so reading net displacement alone silently misclassifies some
+    3-step moves as 1-step ones. This is a parity fact, not a modeling choice: 3 orthogonal unit
+    steps can only ever net to a Manhattan distance of 1 or 3, NEVER 0 or 2 (each axis needs an even
+    step-count to net to zero on that axis, and two even numbers can't sum to the odd total of 3).
+    The no-backtrack rule generalizes the same way as always-2's: no step may reverse the step
+    immediately before it, checked at every step of the walk, not just the first.
 - WITHIN a regime, a 1-move destination is genuinely uniform among the legal squares (only one path
   reaches each). A 2-move destination is NOT uniform, though — CORRECTED 2026-09-09 audit: a
   "diagonal" square (two independent orthogonal steps) is reachable via TWO path combinations

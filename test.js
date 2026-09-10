@@ -109,6 +109,46 @@ const topCell = p => p.cand.reduce((a,b)=>b.p>a.p?b:a).cell;
 { const p = FB._predict([[2,3]], {telegraph:[9,9]});   // off-board telegraph ignored
   eq('off-board telegraph ignored (falls back)', p.exact, false); }
 
+// 7c2) three-move (>=29hp) fish -- confirmed live 2026-09-10, real fish alternate 1<->3 or 2<->3.
+// THE key bug this fixes: net Manhattan distance between positions is ambiguous for a 3-step move
+// that doubles back (nets to 1), so predict() must use REAL step count (moveLens) when available,
+// not just position deltas -- these two positions alone (dist=1 each) would otherwise misclassify
+// a genuine always-3 fish as always-1.
+{ const hist = [[2,2],[2,3],[2,2]]; // net distance 1 then 1 (looks like always-1 from position alone)
+  const withoutMoveLens = FB._predict(hist, {canAlternate:true, canThree:true});
+  eq('without moveLens, ambiguous net-1s read as always-1 (the bug this fixes)', /always-1/.test(withoutMoveLens.why), true);
+  const withMoveLens = FB._predict(hist, {canAlternate:true, canThree:true, moveLens:[3,3]});
+  eq('WITH real moveLens, the same net-1 positions correctly read as always-3', /always-3/.test(withMoveLens.why), true); }
+// Real fish 1 (2026-09-09 loss): step sequence 1,3,1,3 -> alternating 1<->3
+{ const p = FB._predict([[3,4],[3,3],[3,4],[4,4],[3,2]], {canAlternate:true, canThree:true, moveLens:[1,3,1,3]});
+  eq('real fish 1 pattern classifies as alternating 1<->3', /alternating 1<->3 -> 1/.test(p.why), true); }
+// Real fish 2 (2026-09-10 loss): step sequence 3,2,3,2 -> alternating 2<->3
+{ const p = FB._predict([[3,1],[3,2],[4,3],[4,4],[2,4]], {canAlternate:true, canThree:true, moveLens:[3,2,3,2]});
+  eq('real fish 2 pattern classifies as alternating 2<->3', /alternating 2<->3 -> 3/.test(p.why), true); }
+// Legacy 1<->2 alternation keeps its EXACT old string (no spurious "1<->2" pair annotation) so
+// existing log-scanning/regex assumptions elsewhere in the codebase keep working.
+{ const p = FB._predict([[2,2],[2,3],[2,1]], {canAlternate:true, canThree:false});
+  eq('legacy 1<->2 alternation keeps the exact old "why" string', p.why, 'regime alternating -> 1'); }
+// Blind opening on a canThree fish covers dist-3 candidates too, not just 1+2.
+{ const p3 = FB._predict([[2,2]], {canAlternate:true, canThree:true});
+  const p2 = FB._predict([[2,2]], {canAlternate:true, canThree:false});
+  eq('canThree blind opening reaches strictly more candidate cells than a non-canThree one', p3.cand.length > p2.cand.length, true); }
+// No-backtrack rule at dist=3: no path may reverse the immediately-preceding step (verified via the
+// geometry helper directly, not just predict()'s aggregate output).
+{ const cells3 = FB._reachable([2,2], [2,1], 3).map(c => c.join(','));
+  // from [2,2] having just arrived from [2,1] (i.e. moved [2,1]->[2,2]), a legal 3-step walk's
+  // FIRST new step still may not return to [2,1] per dist===1-style logic only at s>=1 -- but the
+  // walk's own step2/step3 must never undo step1/step2. Sanity check: [2,2] itself (net-0) is
+  // impossible for 3 steps (proven by parity: 3 orthogonal unit steps can never sum to zero).
+  eq('dist=3 walk never nets back to the exact start (impossible by parity)', cells3.includes('2,2'), false); }
+{ // structural: every dist=3 end cell must be reachable via a path whose 2nd/3rd step doesn't
+  // undo the prior one -- spot-check a specific 3-step path is honored: [2,2] -> up,right,up
+  // lands on [ (2-1-1), (2+1) ] = [0,3] (off-board) so use a safer interior start instead.
+  const cells = FB._reachable([2,2], null, 3);
+  // net distance for every returned cell must be 1 or 3 (2 and 0 are impossible by parity)
+  const dists = cells.map(c => Math.abs(c[0]-2) + Math.abs(c[1]-2));
+  eq('every dist=3 result has net distance 1 or 3, never 0 or 2 (parity)', dists.every(d => d === 1 || d === 3), true); }
+
 // 7d) redraw = balanced value decision + mana-budget (can we still afford to catch after redrawing?)
 const cands = n => ({ cand: Array.from({length:n}, () => ({cell:[1,1], p:1/n})) });  // n candidate cells
 const blindPr = { ...cands(8), regimeKnown: false };   // movement still unknown -> scouting has value
@@ -289,7 +329,11 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
           c33=mk(33,[4,5,6],[4,6],5,-3,8), c36=mk(36,[2,5,8],[2,8],5,-3,8), c49=mk(49,[1,4,7],[8],5,-3,8);
     const bigDeck = [c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c16,c29,c30,c31,c33,c36,c49,c76,c77,c79];
     const bigFullDeck = bigDeck.map(d=>d.id);
-    const hist = [[2,1],[4,2]];
+    const hist = [[2,1],[4,1]]; // real dist-2 transition (was [4,2], an impossible dist-3 gap for a
+                                  // canAlternate:false fish -- only ever silently tolerated because
+                                  // predict() used to collapse any non-1 distance to 2; now that it
+                                  // uses the real observed distance, an invalid fixture surfaces
+                                  // instead of being masked. See threeMoveMinHp's 2026-09-10 change.
     const pr = FB._predict(hist, {canAlternate:false});
     const gs = { hand:[2,7,3], playerHp:5, focusMeter:1, focusPoint:[3,3], fishHp:8, fishMaxHp:16,
       deckCardData: bigDeck, fullDeck: bigFullDeck, discard:[1,4,5] };

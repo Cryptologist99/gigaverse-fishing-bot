@@ -130,6 +130,27 @@ const cfg = {
                        // that ~83% point estimate. Re-checked 2026-09-09 against the full dataset
                        // (n=12 fish >=21hp): 10/12 same, 2/12 flip on the first transition (0.833),
                        // consistent with 0.75 -- left unchanged.
+  threeMoveMinHp: 29, // CONFIRMED live 2026-09-10 (user): fish at 29hp+ can take a 3-STEP move in
+                       // one turn (never seen below 29; user separately confirmed a 30hp fish shows
+                       // it too). The real signal is PATH LENGTH (lastMovePath.length), not net
+                       // Manhattan displacement -- a 3-step path can double back and land only 1 or
+                       // 2 squares from start (mathematically, 3 orthogonal unit steps can only ever
+                       // net to 1 or 3, never 0 or 2 -- parity: an even net in each axis needs an
+                       // even step count on that axis, and two even counts can't sum to the odd
+                       // total of 3). Confirmed against real history: only fishMaxHp=29 ever shows a
+                       // 3-length path (9 of 56 recorded 29hp turns); every other size (14-30 except
+                       // 29) never does. NOT every fish >=29hp uses it, though -- only 2 of 9 real
+                       // 29hp fish encounters showed any 3-step move at all; the other 7 were
+                       // ordinary always-1/always-2/alternating-1-2, identical to smaller fish. The
+                       // two confirmed 3-capable fish each locked into a clean, perfectly regular
+                       // alternation once measured by path length: one alternated 1<->3, the other
+                       // 2<->3 -- never all three, never a fixed "always-3". Sample size is tiny (2
+                       // real 3-capable fish, vs. the dozens that established alternateMinHp) --
+                       // revisit thresholds/priors below as more real fish confirm or complicate this.
+  threeMoveContinuationPrior: 0.75, // reuses alternateContinuationPrior's value/reasoning for now --
+                       // NOT independently measured (no real data yet on how often a 3-capable fish
+                       // continues at the same distance vs switches after one move). Placeholder
+                       // pending more live 29hp+ fish.
   lookaheadDepth: 2,
   lookaheadMaxCombos: 15,
   lookaheadShortlist: 4,
@@ -225,13 +246,28 @@ function effectAt(def, fr, fc, cell) {
   return missAmt;
 }
 
+// No-backtrack rule, generalized: a step can never reverse the step immediately before it WITHIN
+// this walk. For dist===1 there's only one step, checked against `prev` (last turn's position) --
+// that's the original always-1 rule ("never back to the square it was on last turn"). For s>=1 in
+// a longer walk (dist 2 or 3), `last` is the walk's OWN previous step, not `prev` -- e.g. step 3 of
+// a 3-move can't undo step 2. s===0 of a dist>=2 walk is deliberately left unconstrained against
+// `prev`: for dist=2 this is already validated (the existing "never nets to 0" filter below already
+// excludes an exact reversal, since 2 opposite unit steps always net to 0 -- adding a redundant
+// per-step check here for s=0 doesn't change dist=2's result at all, just moves the same exclusion
+// earlier). For dist=3, nothing in real data supports a rule constraining step 1 against `prev`
+// specifically, so it stays open, same conservative stance as dist=2's s=0.
+function backtracks(dist, s, last, nb) {
+  if (!last) return false;
+  if (!(dist === 1 || s >= 1)) return false;
+  return nb[0] === last[0] && nb[1] === last[1];
+}
 function reachable(cell, prev, dist) {
   let f = new Map([[K(...cell), { c: cell, last: prev }]]);
   for (let s = 0; s < dist; s++) {
     const n = new Map();
     for (const { c: cur, last } of f.values())
       for (const nb of orth(cur)) {
-        if (dist === 1 && last && nb[0] === last[0] && nb[1] === last[1]) continue;
+        if (backtracks(dist, s, last, nb)) continue;
         n.set(K(...nb), { c: nb, last: cur });
       }
     f = n;
@@ -243,14 +279,17 @@ function reachable(cell, prev, dist) {
 // set of end cells. A 2-move fish taking two independent orthogonal steps reaches a "diagonal"
 // square via TWO path combinations (right-then-up or up-then-right) but a straight two-in-a-row
 // square via only ONE, so diagonal squares are twice as likely, not equally likely. For dist=1
-// every reachable cell has exactly one path, so this reduces to uniform automatically.
+// every reachable cell has exactly one path, so this reduces to uniform automatically. For dist=3
+// this same path-count weighting is untested against real data (only 2 confirmed 3-capable fish
+// so far, not enough to validate a diagonal-style skew the way 2-move was) -- carries the same
+// no-backtrack rule (see backtracks()) forward by construction, nothing more assumed yet.
 function reachableWeighted(cell, prev, dist) {
   let f = new Map([[K(...cell) + '|' + (prev ? K(...prev) : '-'), { c: cell, last: prev, w: 1 }]]);
   for (let s = 0; s < dist; s++) {
     const n = new Map();
     for (const { c: cur, last, w } of f.values())
       for (const nb of orth(cur)) {
-        if (dist === 1 && last && nb[0] === last[0] && nb[1] === last[1]) continue;
+        if (backtracks(dist, s, last, nb)) continue;
         const key = K(...nb) + '|' + K(...cur);
         const existing = n.get(key);
         if (existing) existing.w += w; else n.set(key, { c: nb, last: cur, w });
@@ -267,56 +306,85 @@ function reachableWeighted(cell, prev, dist) {
 }
 
 /* ---- fish-move inference ------------------------------------------------ */
+// moveLens (opts.moveLens, optional): the REAL step count (lastMovePath.length) for each observed
+// transition, parallel to the position history. Needed because net Manhattan distance between
+// positions is only an unambiguous proxy for step count up through dist=2 -- a 3-step move can
+// double back and land just 1 or 2 squares from start (see threeMoveMinHp's comment), so a
+// 3-capable fish's classification MUST use real path length, not position deltas, or it silently
+// miscounts some 3-step moves as 1-step ones. Only ever available for REAL turns (playGame()
+// threads it from gs.lastMovePath); recursive/simulated lookahead branches have no real path for a
+// hypothetical future cell and fall back to net-distance via man() -- an accepted approximation,
+// same class as the pre-existing one (net distance was always exact for dist<=2, so this gap only
+// exists for 3-capable fish and only in the simulated-future case).
 function predict(history, opts) {
   const canAlt = !opts || opts.canAlternate !== false;
+  const canThree = !!(opts && opts.canThree);
   const cur = history[history.length - 1];
   const prev = history.length >= 2 ? history[history.length - 2] : null;
   const tel = opts && opts.telegraph;
   if (Array.isArray(tel) && tel.length === 2 && inB(tel[0], tel[1]))
     return { cand: [{ cell: [tel[0], tel[1]], p: 1 }], exact: true, regimeKnown: true, why: 'fintuition telegraph' };
+  const moveLens = opts && opts.moveLens;
   const dists = [];
-  for (let i = 1; i < history.length; i++) dists.push(man(history[i-1], history[i]));
+  for (let i = 1; i < history.length; i++) {
+    const known = moveLens && moveLens[i - 1] != null ? moveLens[i - 1] : man(history[i-1], history[i]);
+    dists.push(known);
+  }
   const unionW = () => {
     const totals = new Map();
-    for (const { cell, w } of [...reachableWeighted(cur, prev, 1), ...reachableWeighted(cur, prev, 2)]) {
-      const key = K(...cell);
-      const e = totals.get(key);
-      if (e) e.w += w; else totals.set(key, { cell, w });
+    for (const d of (canThree ? [1, 2, 3] : [1, 2])) {
+      for (const { cell, w } of reachableWeighted(cur, prev, d)) {
+        const key = K(...cell);
+        const e = totals.get(key);
+        if (e) e.w += w; else totals.set(key, { cell, w });
+      }
     }
     return [...totals.values()];
   };
   // After exactly ONE observed move, favor the fish CONTINUING at that same distance over
-  // FLIPPING to the other one -- most canAlt-eligible fish settle into a fixed always-X regime
-  // rather than genuinely alternate (measured live: 5 of 6 canAlt fish today locked into
-  // always-X after their first move; only 1 truly alternated). Each distance-branch is
-  // normalized to its own probabilities first, then scaled by the prior and merged -- scaling
-  // raw path-weights directly would distort the mix whenever the two branches have different
-  // total path counts.
+  // switching to a different one -- most alternation-eligible fish settle into a fixed always-X
+  // regime rather than genuinely alternate (measured live: 5 of 6 canAlt fish today locked into
+  // always-X after their first move; only 1 truly alternated -- see alternateContinuationPrior).
+  // Each distance-branch is normalized to its own probabilities first, then scaled by the prior
+  // and merged -- scaling raw path-weights directly would distort the mix whenever branches have
+  // different total path counts. Generalized for canThree: "other" now has TWO candidate distances
+  // instead of one, splitting the non-continuation share evenly between them (unvalidated 50/50
+  // split -- see threeMoveContinuationPrior's comment; only reduces to the original exact behavior
+  // when canThree is false, since then "others" has exactly one entry).
   const favorContinuation = (distSame) => {
-    const distOther = distSame === 1 ? 2 : 1;
-    const branchSame = reachableWeighted(cur, prev, distSame);
-    const branchOther = reachableWeighted(cur, prev, distOther);
+    const others = canThree ? [1, 2, 3].filter(d => d !== distSame) : [distSame === 1 ? 2 : 1];
+    const prior = canThree ? cfg.threeMoveContinuationPrior : cfg.alternateContinuationPrior;
     const sumW = arr => arr.reduce((s, x) => s + x.w, 0);
-    const totalSame = sumW(branchSame), totalOther = sumW(branchOther);
     const totals = new Map();
-    const add = (arr, total, share) => { if (total <= 0) return;
+    const add = (arr, total, share) => { if (total <= 0 || share <= 0) return;
       for (const { cell, w } of arr) { const key = K(...cell), scaled = (w / total) * share;
         const e = totals.get(key); if (e) e.w += scaled; else totals.set(key, { cell, w: scaled }); } };
-    add(branchSame, totalSame, cfg.alternateContinuationPrior);
-    add(branchOther, totalOther, 1 - cfg.alternateContinuationPrior);
+    const branchSame = reachableWeighted(cur, prev, distSame);
+    add(branchSame, sumW(branchSame), prior);
+    const otherShare = (1 - prior) / others.length;
+    others.forEach(d => { const branch = reachableWeighted(cur, prev, d); add(branch, sumW(branch), otherShare); });
     return [...totals.values()];
   };
-  const types = dists.map(d => (d === 1 ? 1 : 2));
   let W, why, regimeKnown = true;
-  if (!types.length) { W = unionW(); why = 'regime unknown (cover 1+2)'; regimeKnown = false; }
-  else if (!canAlt) { const dist = types.every(t => t === 2) ? 2 : 1; W = reachableWeighted(cur, prev, dist); why = 'regime always-' + dist + ' (≤21hp, locked)'; }
-  else if (types.length < 2) { W = favorContinuation(types[0]); why = 'could still alternate (favor dist-' + types[0] + ' continuing)'; regimeKnown = false; }
+  if (!dists.length) { W = unionW(); why = 'regime unknown (cover 1+2' + (canThree ? '+3' : '') + ')'; regimeKnown = false; }
+  else if (!canAlt) { const dist = dists.every(t => t === 2) ? 2 : 1; W = reachableWeighted(cur, prev, dist); why = 'regime always-' + dist + ' (≤21hp, locked)'; }
+  else if (dists.length < 2) { W = favorContinuation(dists[0]); why = 'could still alternate (favor dist-' + dists[0] + ' continuing)'; regimeKnown = false; }
   else {
-    const last = types[types.length - 1], allOne = types.every(t => t === 1), allTwo = types.every(t => t === 2), alt = types.every((t, i) => i === 0 || t !== types[i - 1]);
+    const last = dists[dists.length - 1];
+    const distinct = [...new Set(dists)];
+    const allSame = distinct.length === 1;
+    const strictlyAlternates = dists.every((t, i) => i === 0 || t !== dists[i - 1]);
     let dist;
-    if (allOne) { dist = 1; why = 'regime always-1'; }
-    else if (allTwo) { dist = 2; why = 'regime always-2'; }
-    else if (alt) { dist = last === 1 ? 2 : 1; why = 'regime alternating -> ' + dist; }
+    if (allSame) { dist = distinct[0]; why = 'regime always-' + dist; }
+    else if (strictlyAlternates && distinct.length === 2) {
+      dist = distinct.find(v => v !== last);
+      const pairStr = distinct.slice().sort((a, b) => a - b).join('<->');
+      // Preserve the exact legacy string for the already-established 1<->2 case (existing
+      // tests/log-scanning scripts match against literal "alternating -> N"); only the NEW pairs
+      // this change introduces (1<->3, 2<->3) get the explicit pair annotation, since there was
+      // previously no other alternating pair possible to distinguish from.
+      why = pairStr === '1<->2' ? 'regime alternating -> ' + dist : 'regime alternating ' + pairStr + ' -> ' + dist;
+    }
     else { dist = last; why = 'regime mixed -> ' + dist; }
     W = reachableWeighted(cur, prev, dist);
   }
@@ -508,7 +576,7 @@ function leafEstimate(fishHp, fishMaxHp, mana, focus, defs, hand, pool) {
 }
 
 function playValue(defs, def, pos, cardId, handIdx, state, depth) {
-  const { hand, mana, focus, fishHp, fishMaxHp, hist, fullDeck, discard, canAlt } = state;
+  const { hand, mana, focus, fishHp, fishMaxHp, hist, fullDeck, discard, canAlt, canThree } = state;
   const cMana = def.manaCost ?? 1;
   let val = 0;
   for (const { cell, p, a } of pos.branches) {
@@ -523,7 +591,7 @@ function playValue(defs, def, pos, cardId, handIdx, state, depth) {
       else if (depth > 0) {
         branch = lookaheadValue(defs, { hand: newHand, mana: newMana, focus: focus - pos.moveCost,
           bobber: pos.focus, fishHp: newFishHp, fishMaxHp, hist: hist.concat([cell]),
-          fullDeck, discard: (discard || []).concat([cardId]), canAlt }, depth - 1);
+          fullDeck, discard: (discard || []).concat([cardId]), canAlt, canThree }, depth - 1);
       } else branch = leafEstimate(newFishHp, fishMaxHp, newMana, focus - pos.moveCost, defs, newHand, drawPool({ fullDeck, hand: newHand, discard: (discard || []).concat([cardId]) }));
     }
     val += p * branch;
@@ -551,13 +619,13 @@ function removeDrawn(pool, drawn) {
   return p;
 }
 function evaluateRedraw(defs, state, depth, cost) {
-  const { hand, mana, focus, bobber, fishHp, fishMaxHp, hist, fullDeck, discard, canAlt, telegraph } = state;
+  const { hand, mana, focus, bobber, fishHp, fishMaxHp, hist, fullDeck, discard, canAlt, canThree, telegraph } = state;
   const newMana = mana - cost;
   if (newMana < 0) return -Infinity;
   // Redrawing doesn't change whether/where the fish moves this turn -- a live telegraph (only
   // ever set on the top-level state, see chooseAction()) is just as valid here as it was for the
   // `pr` chooseAction() already computed for the play-side comparison.
-  const pr = predict(hist, { canAlternate: canAlt, telegraph });
+  const pr = predict(hist, { canAlternate: canAlt, canThree, telegraph });
   const pool = drawPool({ fullDeck, hand, discard });
   const drawN = Math.min(3, pool.length);
   if (drawN === 0) return -Infinity;
@@ -574,7 +642,7 @@ function evaluateRedraw(defs, state, depth, cost) {
       let branch;
       if (newMana <= 0) branch = LA_LOSS;
       else if (depth > 0) branch = lookaheadValue(defs, { hand: newHand, mana: newMana, focus, bobber,
-        fishHp, fishMaxHp, hist: hist.concat([cell]), fullDeck, discard: (discard || []).concat(hand), canAlt }, depth - 1);
+        fishHp, fishMaxHp, hist: hist.concat([cell]), fullDeck, discard: (discard || []).concat(hand), canAlt, canThree }, depth - 1);
       else branch = leafEstimate(fishHp, fishMaxHp, newMana, focus, defs, newHand, removeDrawn(pool, newHand));
       val += jp * branch;
     }
@@ -592,10 +660,10 @@ function evaluateRedraw(defs, state, depth, cost) {
 // card when a 50%-lethal position was available with the same card).
 function lookaheadValue(defs, state, depth) {
   if (lookaheadDeadline !== null && Date.now() > lookaheadDeadline) throw new LookaheadBudgetExceeded();
-  const { hand, mana, focus, bobber, fishHp, fishMaxHp, hist, canAlt } = state;
+  const { hand, mana, focus, bobber, fishHp, fishMaxHp, hist, canAlt, canThree } = state;
   if (mana <= 0) return LA_LOSS;
   if (hand.length === 0) return evaluateRedraw(defs, state, depth, 0);
-  const pr = predict(hist, { canAlternate: canAlt });
+  const pr = predict(hist, { canAlternate: canAlt, canThree });
   const catchBar = fishMaxHp - fishHp;
   let best = -Infinity;
   hand.forEach((cardId, handIdx) => {
@@ -634,6 +702,7 @@ function chooseAction(gs, hist, pr, allowRedraw) {
   }
   const depth = cfg.lookaheadDepth;
   const canAlt = gs.fishMaxHp >= cfg.alternateMinHp;
+  const canThree = gs.fishMaxHp >= cfg.threeMoveMinHp;
   // telegraph (fintuition skill: reveals the fish's exact next square) only tells us about THIS
   // turn's move, not any hypothetical future turn -- so it belongs on the state object built HERE
   // (the real current decision), not on the fresh state objects playValue()/evaluateRedraw() build
@@ -642,7 +711,7 @@ function chooseAction(gs, hist, pr, allowRedraw) {
   // when this turn's own `pr` already used it, silently blind for that one call.
   const telegraph = pr.exact && pr.why === 'fintuition telegraph' ? pr.cand[0].cell : undefined;
   const state = { hand: gs.hand || [], mana: gs.playerHp, focus: gs.focusMeter, bobber: gs.focusPoint,
-    fishHp: gs.fishHp, fishMaxHp: gs.fishMaxHp, hist, fullDeck: gs.fullDeck, discard: gs.discard, canAlt, telegraph };
+    fishHp: gs.fishHp, fishMaxHp: gs.fishMaxHp, hist, fullDeck: gs.fullDeck, discard: gs.discard, canAlt, canThree, telegraph };
   let bestPlay = null;
   // handEval: the same real win-probability lookahead already computed here for EVERY hand card
   // (not just the one ultimately chosen) -- previously thrown away once bestPlay was picked. Saved
@@ -822,10 +891,15 @@ async function playGame(n, fishBudget) {
 
   const run = { meta: { node: cfg.nodeId, tier: cfg.tierId, result: null, fish: null,
                         fishMaxHp: gs.fishMaxHp, manaMax: gs.playerMaxHp, focusMax: gs.focusMeterMax,
-                        canAlt: gs.fishMaxHp >= cfg.alternateMinHp }, gridSize: G, cards: {}, turns: [] };
+                        canAlt: gs.fishMaxHp >= cfg.alternateMinHp,
+                        canThree: gs.fishMaxHp >= cfg.threeMoveMinHp }, gridSize: G, cards: {}, turns: [] };
   updateCards(run, gs); lastRun = run;
   let oilBalance = cfg.useOils ? await fetchOilBalance(cfg.oilItemId) : 0;
-  let hist = [gs.fishPosition.slice()], fishNo = 1;
+  // moveLens: REAL step count per turn (gs.lastMovePath.length), parallel to hist -- needed so
+  // predict() can correctly classify a 3-capable fish's regime from true step count rather than
+  // net position delta (see predict()'s own comment; net delta alone can't tell a 3-step move
+  // that doubled back from a genuine 1-step move). Reset alongside hist for each new fish.
+  let hist = [gs.fishPosition.slice()], moveLens = [], fishNo = 1;
   log(`  fish#${fishNo} ${gs.fishHp}/${gs.fishMaxHp} | mana ${gs.playerHp}/${gs.playerMaxHp} | focus ${gs.focusMeter}/${gs.focusMeterMax} | fish@[${gs.fishPosition}] bobber@[${gs.focusPoint}] | hand=[${gs.hand}]`);
 
   for (let t = 0; t < cfg.maxTurns; t++) {
@@ -888,7 +962,7 @@ async function playGame(n, fishBudget) {
         throw e;
       }
       gs = stateOf(resp); updateCards(run, gs);
-      fishNo++; hist = [gs.fishPosition.slice()];
+      fishNo++; hist = [gs.fishPosition.slice()]; moveLens = [];
       log(`  +added card ${pick.id}. fish#${fishNo} ${gs.fishHp}/${gs.fishMaxHp} | mana ${gs.playerHp} | fish@[${gs.fishPosition}] hand=[${gs.hand}]`);
       continue;
     }
@@ -896,7 +970,8 @@ async function playGame(n, fishBudget) {
     if (gs.fishHp >= gs.fishMaxHp) { run.meta.result = 'loss'; return { result: lose(gs, 'catch bar emptied (fish escaped)'), fishPlayed: fishNo }; }
 
     const defs = {}; (gs.deckCardData || []).forEach(d => defs[d.id] = d);
-    const pr = predict(hist, { canAlternate: gs.fishMaxHp >= cfg.alternateMinHp, telegraph: gs.nextPosition });
+    const pr = predict(hist, { canAlternate: gs.fishMaxHp >= cfg.alternateMinHp,
+      canThree: gs.fishMaxHp >= cfg.threeMoveMinHp, moveLens, telegraph: gs.nextPosition });
     const choice = chooseAction(gs, hist, pr, cfg.enableRedraw);
     const mv = choice.mv;
     const candStr = pr.exact ? `predict [${pr.cand[0].cell}] (${pr.why})` : `${pr.cand.length} cells (${pr.why})`;
@@ -911,7 +986,8 @@ async function playGame(n, fishBudget) {
         drawPool: gs.fullDeck ? drawPool(gs) : undefined, choiceVal: choice.val, playVal: choice.playVal, handEval: choice.handEval };
       log(`  t${t}: ${candStr} -> REDRAW (discard ${cost}, -${cost} mana)`);
       resp = await action('play_cards', { cards: [], focusPoint: gs.focusPoint });
-      gs = stateOf(resp); hist.push(gs.fishPosition.slice());
+      { const before = hist[hist.length - 1]; gs = stateOf(resp); hist.push(gs.fishPosition.slice());
+        moveLens.push(gs.lastMovePath ? gs.lastMovePath.length : man(before, gs.fishPosition)); }
       Object.assign(snap, { fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter });
       run.turns.push(snap);
       log(`     redrew -> fish->[${gs.fishPosition}] fishHp ${gs.fishHp} mana ${gs.playerHp} hand=[${gs.hand}]`);
@@ -955,7 +1031,8 @@ async function playGame(n, fishBudget) {
     const newGs = stateOf(resp);
     const inZone = zones => (zones || []).some(z => { const c = zoneCell(z, mv.focus[0], mv.focus[1]); return c[0] === newGs.fishPosition[0] && c[1] === newGs.fishPosition[1]; });
     const kind = inZone(def.critZones) ? 'CRIT' : inZone(def.hitZones) ? 'HIT' : 'miss';
-    gs = newGs; hist.push(gs.fishPosition.slice());
+    { const before = hist[hist.length - 1]; gs = newGs; hist.push(gs.fishPosition.slice());
+      moveLens.push(gs.lastMovePath ? gs.lastMovePath.length : man(before, gs.fishPosition)); }
     Object.assign(snap, { result: kind, fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter });
     run.turns.push(snap);
     log(`     ${kind} | ${bar(gs)} | mana ${gs.playerHp} | focus ${gs.focusMeter} | fish->[${gs.fishPosition}] path=${JSON.stringify(gs.lastMovePath)} hand=[${gs.hand}]`);
