@@ -186,6 +186,28 @@ const topCell = p => p.cand.reduce((a,b)=>b.p>a.p?b:a).cell;
   const choice = FB._chooseAction(gs, hist, pr, true);
   eq('rule does not fire when no zero-miss-penalty card is in hand', !!(choice.mv && choice.mv.forcedFreeCard), false); }
 
+// 7c3-bis) REGRESSION (found live 2026-09-11, viewer #200): a zero-miss-penalty card whose
+// missEffects array has NO FISH_HP entry at all (real API shape for "miss does nothing" -- it
+// omits the effect rather than sending an explicit amount:0, matching card 16's real def) must
+// still qualify as a free card. The rule's filter used to do `....amount === 0` with no `|| 0`
+// fallback, unlike every other amount-lookup in the file -- `undefined === 0` is false, so this
+// exact real-world shape silently never matched and the engine redrew away a genuinely free card.
+{ const mkZ = (id, hit, hitAmt, missEffects) => ({ id, manaCost: 1, hitZones: hit, critZones: [],
+    hitEffects: [{ type: 'FISH_HP', amount: hitAmt }], missEffects, critEffects: [] });
+  const freeCard = mkZ(900, [1,2,3,4,5,6,7,8,9], 1, []); // real card-16 shape: no FISH_HP miss entry at all
+  const weak1 = mkZ(901, [1], 3, [{ type: 'FISH_HP', amount: -5 }]);
+  const weak2 = mkZ(902, [3], 3, [{ type: 'FISH_HP', amount: -5 }]);
+  const filler = [903,904,905,906,907].map(id => mkZ(id, [5], 4, [{ type: 'FISH_HP', amount: -4 }]));
+  const deckCardData = [freeCard, weak1, weak2, ...filler];
+  const fullDeck = deckCardData.map(d => d.id);
+  const gs = { deckCardData, hand: [900, 901, 902], playerHp: 10, playerMaxHp: 14,
+    focusMeter: 3, focusMeterMax: 3, focusPoint: [2,2], fishHp: 20, fishMaxHp: 25,
+    fullDeck, discard: [] };
+  const hist = [[2,2]];
+  const pr = FB._predict(hist, { canAlternate: false });
+  const choice = FB._chooseAction(gs, hist, pr, true);
+  eq('zero-cost card with an EMPTY missEffects array still beats redraw', choice.type === 'play' && choice.mv.cardId === 900, true); }
+
 // 7d) redraw = balanced value decision + mana-budget (can we still afford to catch after redrawing?)
 const cands = n => ({ cand: Array.from({length:n}, () => ({cell:[1,1], p:1/n})) });  // n candidate cells
 const blindPr = { ...cands(8), regimeKnown: false };   // movement still unknown -> scouting has value

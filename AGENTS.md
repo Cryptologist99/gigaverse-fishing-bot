@@ -52,6 +52,11 @@ runs (open it in any browser, no server needed).
 - **Oils are off by default and spend real, limited inventory.** The CLI prompts interactively each
   run; never pass `--useOils=true` (or any oil flag) or answer that prompt on the user's behalf —
   let them decide whether and how to use oils each time.
+- **`--tierId=2`/`--tierId=3` (default 1) spend a real, limited ring** (Silver for Tier 2, Gold for
+  Tier 3) in exchange for 2x/4x hard-cores rewards — same caution as oils: don't default to a higher
+  tier unless the user asks for one. Auto-consumption/rejection behavior for a missing ring isn't
+  verified live yet, so watch for a ring-related error the same way daily-cap/energy errors are
+  already handled (see `fishing-notes.md`'s "Pond tiers & rings" section).
 - **"a run" / "one run" always means ONE FISH**, not a multi-fish chain. Default to `--maxFish=1`
   unless told otherwise. **"Run N fish" means N total, no matter what** — a loss starts a fresh
   game and keeps going rather than ending the batch; let it finish and report once at the end.

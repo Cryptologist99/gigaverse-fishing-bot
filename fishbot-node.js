@@ -824,7 +824,7 @@ function chooseAction(gs, hist, pr, allowRedraw) {
   // decision -- if some OTHER card already legitimately beats both redraw and this free card, that
   // choice is untouched.
   const freeCards = Object.values(zeroCostByHandIdx).filter(z =>
-    ((defs[z.cardId].missEffects || []).find(e => e.type === 'FISH_HP') || {}).amount === 0);
+    (((defs[z.cardId].missEffects || []).find(e => e.type === 'FISH_HP') || {}).amount || 0) === 0);
   if (freeCards.length && redrawVal > -Infinity && (!bestPlay || redrawVal > bestPlay.val)) {
     const best = freeCards.reduce((a, b) => (b.val > a.val ? b : a));
     const handIdx = +Object.keys(zeroCostByHandIdx).find(k => zeroCostByHandIdx[k] === best);
@@ -1103,10 +1103,30 @@ async function run(onGameDone) {
       log(`  reached maxGames (${cfg.maxGames}) safety cap with ${remaining} fish still short of the target -- stopping`);
       break;
     }
+    const lastRunBeforeAttempt = lastRun;
     let outcome;
     try {
       outcome = await playGame(g, remaining);
-    } catch (e) { warn('error:', e.message); out.push('err'); break; }
+    } catch (e) {
+      warn('error:', e.message); out.push('err');
+      // A fatal error (e.g. "Not enough energy" on the NEXT fish's start_run) can strike after
+      // real fish were already caught THIS game -- playGame() already updated lastRun in memory
+      // for each catch (see updateCards/lastRun assignment inside playGame's fish loop), it just
+      // never got exported because that normally happens via onGameDone below, which this break
+      // used to skip entirely. Confirmed live 2026-09-11: a 2-catch game crashed on fish #3's
+      // start_run and both real catches (with drafted cards already added to the account's deck)
+      // were silently lost -- never written to disk, never merged into the replay viewer, even
+      // though they genuinely happened.
+      //
+      // Only export if lastRun actually changed identity during THIS attempt -- playGame() creates
+      // a brand-new `run` object right after ITS OWN start_run succeeds, so if the crash struck
+      // before that (e.g. the very first start_run of a fresh game, zero catches yet), lastRun is
+      // still whichever earlier game's object was already exported by a prior onGameDone call.
+      // Exporting unconditionally here would re-emit that stale object as if it were new progress,
+      // creating a duplicate.
+      if (onGameDone && lastRun && lastRun !== lastRunBeforeAttempt) onGameDone(lastRun, g);
+      break;
+    }
     out.push(outcome.result);
     remaining -= outcome.fishPlayed;
     // lastRun (and therefore exportRun(), which just reads it) only ever holds the MOST RECENT

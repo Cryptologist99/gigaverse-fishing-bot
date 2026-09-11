@@ -105,6 +105,40 @@ lastMovePath[zoneA,zoneB] (0-indexed 4x4 zones), caughtFish{...}, deckCardData[c
   Mid=40%, confirmed live; Big unverified numerically but same mechanism). Focus Oil gives an immediate
   "+3 Focus" restore. Draw Oil draws one extra card into hand for free (no mana cost).
 
+## Pond tiers & rings (user, 2026-09-11)
+- Fishing at Tier 2 or Tier 3 (`tierId` in `start_run`'s payload — see "Action payloads" above; the
+  bot's `cfg.tierId`/`--tierId=` flag, default 1) requires spending a ring: **Silver ring for Tier 2,
+  Gold ring for Tier 3**. In exchange, Tier 2 doubles hard-cores rewards and Tier 3 quadruples them
+  (see "Catch rewards" below). Rings are almost certainly the `TYPE_CID:"Gear"` ring slot already
+  visible in `start_run`'s response (`data.doc.GEAR_CID_array` — see "Fishing oils" above, which notes
+  this array covers rod/ring/lure/cosmetics).
+- Which ring type is in stock/available rotates on a daily schedule that isn't documented anywhere the
+  user has access to — don't assume a given ring is available on a given day.
+- **Not yet verified live**: whether `start_run` auto-consumes the matching ring from inventory when
+  `tierId>1`, what error it returns if the account doesn't own the needed ring, or whether a ring must
+  be equipped via some other action first. Treat a Tier 2/3 request the same way as oils below (a
+  real, limited resource spend) until this is confirmed — watch for a ring-related rejection the same
+  way `"Player has reached max runs for fishing"` (daily cap) and `"Not enough energy"` are already
+  handled as distinct, named error strings.
+
+## Catch rewards: rarity, quality, hard cores (user-verified 2026-09-11)
+- Every catch has a `rarity` (0-6) and `quality` (1-5) on its `catchDetails`, tracked separately from
+  Sediment. Rarity names, 0-indexed: Common, Uncommon, Rare, Epic, Legendary, Relic, Giga.
+- A separate reward called **hard cores** is NOT present in any captured `loot` response (confirmed
+  absent from raw API data via a `DEBUG_LOOT=1` capture) — it's tracked entirely server-side/elsewhere,
+  not something the bot can currently read directly. The formula below was reverse-engineered from
+  user-supplied verified game-data tables, not from bot telemetry, and cross-validated against 3
+  independent real reward figures with zero rounding error.
+- **Formula**: `cores = rarityCoresBase[rarity][pondTier] * qualityMultiplier[quality]`.
+  - Rarity base at Tier 1 (doubles per pond tier — Tier2=×2, Tier3=×4, see "Pond tiers & rings" above):
+    Common 80, Uncommon 160, Rare 320, Epic 400, Legendary 480, Relic 560, Giga 640. **Not a single
+    clean progression** — doubles for the first two bumps (Common→Uncommon→Rare) then flattens to a
+    flat +80/tier for the rest. Don't assume it's geometric or arithmetic if extending this table.
+  - Quality multiplier: q1=1, q2=2, q3=4, q4=5, q5=6. Also not linear/geometric — doubles twice then
+    flattens to +1.
+- Implemented in the replay viewer and the (unpublished/local-only) daily-report artifacts as
+  `RARITY_CORES_BASE`/`QUALITY_MULT`/`coresFor()`.
+
 ## Finding real action names / payloads (method note)
 Browser-context `fetch()`/`XMLHttpRequest` monkey-patching (`window.fetch = ...`) reliably FAILS to
 intercept this app's own network calls, even right after a fresh page reload — its bundled HTTP client
