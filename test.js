@@ -149,6 +149,43 @@ const topCell = p => p.cand.reduce((a,b)=>b.p>a.p?b:a).cell;
   const dists = cells.map(c => Math.abs(c[0]-2) + Math.abs(c[1]-2));
   eq('every dist=3 result has net distance 1 or 3, never 0 or 2 (parity)', dists.every(d => d === 1 || d === 3), true); }
 
+// 7c3) zero-miss-penalty + zero-focus-cost card beats redraw, hardcoded rule (user 2026-09-10,
+// after a live investigation into a real case -- viewer #169's turn 1 -- where the recursive engine
+// undervalued exactly this scenario). A card playable from the CURRENT bobber position (no focus
+// spent) whose miss effect is 0 should never lose to a redraw: you can play it for strictly
+// non-negative progress and still redraw next turn (cheaper, with a smaller hand) if needed.
+{ const mkZ = (id, hit, missAmt, hitAmt) => ({ id, manaCost: 1, hitZones: hit, critZones: [],
+    hitEffects: [{ type: 'FISH_HP', amount: hitAmt }], missEffects: [{ type: 'FISH_HP', amount: missAmt }], critEffects: [] });
+  const freeCard = mkZ(900, [1,2,3,4,5,6,7,8,9], 0, 1); // covers everywhere from [2,2], zero miss penalty
+  const weak1 = mkZ(901, [1], -5, 3); // narrow, real miss penalty
+  const weak2 = mkZ(902, [3], -5, 3);
+  const filler = [903,904,905,906,907].map(id => mkZ(id, [5], -4, 4));
+  const deckCardData = [freeCard, weak1, weak2, ...filler];
+  const fullDeck = deckCardData.map(d => d.id);
+  const gs = { deckCardData, hand: [900, 901, 902], playerHp: 10, playerMaxHp: 14,
+    focusMeter: 3, focusMeterMax: 3, focusPoint: [2,2], fishHp: 20, fishMaxHp: 25,
+    fullDeck, discard: [] };
+  const hist = [[2,2]];
+  const pr = FB._predict(hist, { canAlternate: false });
+  const choice = FB._chooseAction(gs, hist, pr, true);
+  eq('zero-cost zero-penalty card beats redraw', choice.type === 'play' && choice.mv.cardId === 900, true);
+  eq('forced free-card play carries zero moveCost', choice.mv.moveCost, 0); }
+// Sanity check: with NO zero-miss-penalty card in hand, the rule must not fire at all --
+// confirms it's genuinely scoped to that exact case, not just always forcing some card.
+{ const mkZ = (id, hit, missAmt, hitAmt) => ({ id, manaCost: 1, hitZones: hit, critZones: [],
+    hitEffects: [{ type: 'FISH_HP', amount: hitAmt }], missEffects: [{ type: 'FISH_HP', amount: missAmt }], critEffects: [] });
+  const weak1 = mkZ(901, [1], -5, 3), weak2 = mkZ(902, [3], -5, 3), weak3 = mkZ(908, [5], -5, 3);
+  const filler = [903,904,905,906,907].map(id => mkZ(id, [5], -4, 4));
+  const deckCardData = [weak1, weak2, weak3, ...filler];
+  const fullDeck = deckCardData.map(d => d.id);
+  const gs = { deckCardData, hand: [901, 902, 908], playerHp: 10, playerMaxHp: 14,
+    focusMeter: 3, focusMeterMax: 3, focusPoint: [2,2], fishHp: 20, fishMaxHp: 25,
+    fullDeck, discard: [] };
+  const hist = [[2,2]];
+  const pr = FB._predict(hist, { canAlternate: false });
+  const choice = FB._chooseAction(gs, hist, pr, true);
+  eq('rule does not fire when no zero-miss-penalty card is in hand', !!(choice.mv && choice.mv.forcedFreeCard), false); }
+
 // 7d) redraw = balanced value decision + mana-budget (can we still afford to catch after redrawing?)
 const cands = n => ({ cand: Array.from({length:n}, () => ({cell:[1,1], p:1/n})) });  // n candidate cells
 const blindPr = { ...cands(8), regimeKnown: false };   // movement still unknown -> scouting has value

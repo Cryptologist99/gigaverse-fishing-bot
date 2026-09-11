@@ -722,16 +722,28 @@ function chooseAction(gs, hist, pr, allowRedraw) {
   // winning position/branches around so a depth-3 escalation (below) can re-run playValue one ply
   // deeper on the SAME position instead of re-searching the board.
   const posByHandIdx = {};
+  // zeroCostByHandIdx: the best MOVECOST===0 candidate for each card, kept separately from bestPos
+  // -- bestPos is chosen purely by recursive value and may well be a position that DOES spend focus
+  // (as happened live: card16's highest-value position cost 1 focus even though a 0-cost position
+  // was also in its shortlist), so relying on bestPos alone would miss a genuinely free play. Used
+  // below by the zero-miss-penalty-card-beats-redraw rule, which specifically needs "can this be
+  // played at zero focus cost", not "what's this card's single best-valued position".
+  const zeroCostByHandIdx = {};
   (gs.hand || []).forEach((cardId, handIdx) => {
     const def = defs[cardId]; if (!def) return;
     const cMana = def.manaCost ?? 1;
     if (cMana > gs.playerHp) { handEval.push({ cardId, handIdx, affordable: false }); return; }
     const candidates = positionsFor(def, gs.focusPoint, gs.focusMeter, pr, gs.fishMaxHp - gs.fishHp, gs.fishMaxHp)
       .slice(0, cfg.lookaheadShortlist);
-    let bestPos = null;
+    let bestPos = null, zeroCost = null;
     for (const pos of candidates) {
       const val = playValue(defs, def, pos, cardId, handIdx, state, depth);
       if (!bestPos || val > bestPos.val) bestPos = { pos, val };
+      if (pos.moveCost === 0 && (!zeroCost || val > zeroCost.val)) zeroCost = { pos, val };
+    }
+    if (zeroCost) {
+      const pHitZero = zeroCost.pos.branches.filter(b => b.a > 0).reduce((s, b) => s + b.p, 0);
+      zeroCostByHandIdx[handIdx] = { cardId, val: zeroCost.val, pos: zeroCost.pos, pHit: pHitZero };
     }
     if (!bestPos) { handEval.push({ cardId, handIdx, affordable: true, playable: false }); return; }
     posByHandIdx[handIdx] = bestPos.pos;
@@ -795,6 +807,35 @@ function chooseAction(gs, hist, pr, allowRedraw) {
         lookaheadDeadline = prevDeadline;
       }
     }
+  }
+
+  // HARDCODED RULE (user 2026-09-10, after an extensive live investigation): a hand card with ZERO
+  // miss penalty that can be played at ZERO focus cost (no bobber movement needed) should never
+  // lose to a redraw. Playing it costs strictly non-negative expected progress, reveals the exact
+  // same regime information a redraw would (the fish moves regardless of which you choose), and you
+  // can STILL redraw next turn -- at a CHEAPER cost, since your hand is now one card smaller -- if
+  // the reduced hand looks weak. The investigation found the recursive engine can genuinely
+  // undervalue this: a state built to dominate on every tracked resource (same mana, same focus,
+  // strictly lower fishHp, one MORE observed move) scored WORSE than the alternative once real
+  // recursion ran, traced to predict()'s regime classification behaving very differently depending
+  // on how many moves have been observed (1 vs 2) rather than to any real difference in resources.
+  // That's a real root-cause question for a future audit (flagged, not yet fixed) -- but this exact,
+  // narrow scenario is safe to hardcode now rather than wait on it. Only overrides an ACTUAL redraw
+  // decision -- if some OTHER card already legitimately beats both redraw and this free card, that
+  // choice is untouched.
+  const freeCards = Object.values(zeroCostByHandIdx).filter(z =>
+    ((defs[z.cardId].missEffects || []).find(e => e.type === 'FISH_HP') || {}).amount === 0);
+  if (freeCards.length && redrawVal > -Infinity && (!bestPlay || redrawVal > bestPlay.val)) {
+    const best = freeCards.reduce((a, b) => (b.val > a.val ? b : a));
+    const handIdx = +Object.keys(zeroCostByHandIdx).find(k => zeroCostByHandIdx[k] === best);
+    log(`  forcing card ${best.cardId} over redraw (zero miss penalty, zero focus cost -- can still redraw next turn if needed)`);
+    const forcedMv = { val: best.val, handIdx, cardId: best.cardId,
+      mana: defs[best.cardId].manaCost ?? 1, focus: best.pos.focus, moveCost: 0,
+      pHit: best.pHit, ev: best.pos.ev, forcedFreeCard: true };
+    // Return directly rather than falling through to the value comparison below -- that
+    // comparison is exactly what this rule exists to override (redrawVal is still numerically
+    // higher than this card's own recursive value; that's the whole reason we're forcing it).
+    return { type: 'play', mv: forcedMv, redrawVal, handEval, escalated };
   }
 
   if (!bestPlay && redrawVal === -Infinity) return { type: 'none', handEval };
