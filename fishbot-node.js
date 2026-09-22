@@ -2,25 +2,21 @@
 /* ============================================================================
  * Gigaverse Fishing Bot — standalone Node CLI (calls the API directly, no browser).
  * ----------------------------------------------------------------------------
- * predict/positionsFor/lookahead/chooseAction implement the decision engine; jwt() reads
- * your token from token.txt; exportRun() writes each fish's turn-by-turn log as JSON.
+ * Same decision engine as fishbot.js (predict / positionsFor / lookahead / chooseAction),
+ * ported to run outside the page: jwt() reads from token.txt instead of localStorage,
+ * exportRun() writes a JSON file instead of using the clipboard.
  *
- * FIRST-TIME SETUP (see README.md for the full walkthrough):
- * 1. Log into gigaverse.io in a browser, open DevTools -> Console, run:
- *      copy(JSON.parse(localStorage.getItem('authResponse')).jwt)
- *    This copies your session token to the clipboard.
- * 2. Paste it into a new file named token.txt in this directory (just the raw token, nothing else).
- * 3. Find your wallet address (shown in the game's UI / your wallet), and pass it with --address=
- *    the first time you run the bot (or set cfg.address below permanently).
- * Re-do step 1-2 whenever the token expires (you'll see 401 errors).
+ * token.txt must hold the raw JWT (paste from the browser's localStorage authResponse.jwt —
+ * DevTools console: copy(JSON.parse(localStorage.getItem('authResponse')).jwt), then save the
+ * clipboard contents into token.txt). Re-paste it here whenever the token expires (401s).
  *
  * Running against a DIFFERENT account: create a second token file yourself the same way (e.g.
  * token-main.txt, in this directory), then pass --tokenFile and --address to point at it —
  * neither of these ever asks for or touches the JWT value itself.
  *
  * Usage:
- *   node fishbot-node.js --maxFish=1 --address=0xYOUR_ADDRESS
- *   node fishbot-node.js --maxFish=5 --address=0xYOUR_ADDRESS
+ *   node fishbot-node.js --maxFish=1
+ *   node fishbot-node.js --maxFish=5
  *   node fishbot-node.js --maxFish=1 --address=0xYOUR_ADDRESS --tokenFile=token-main.txt
  *
  * --maxFish=N means N fish TOTAL -- a loss ends the current game, not the batch; the bot just
@@ -38,9 +34,7 @@ const TOKEN_PATH = path.join(__dirname, 'token.txt');
 const RUNS_DIR = path.join(__dirname, 'runs');
 
 const cfg = {
-  address:  null, // REQUIRED -- set via --address=0xYOUR_WALLET on the command line, or hardcode
-                   // it here once you know it. There is no default; the bot refuses to start
-                   // without one (see the check in the CLI entry point below).
+  address:  '0x7f9Dc44Ec4EE1E8ccaC4AE04Fd541e4acE0E4942',
   tokenFile: null, // path (relative to this file's dir, or absolute) to a JWT file, for running
                     // against an account other than the default -- overrides TOKEN_PATH below when
                     // set. The user creates this file themselves (paste the JWT into it directly,
@@ -56,16 +50,17 @@ const cfg = {
   // escape). tierId's effect is unverified -- passing 0 always worked live for Lil-tier items;
   // kept configurable in case Big-tier items turn out to need a different value.
   //
-  // OFF by default: using an oil spends real limited inventory on the user's actual account, so
-  // the CLI asks interactively each run rather than silently deciding on its own -- see
-  // promptForOilConfig() below, called from the CLI entry point only (never from library/test
-  // usage of run()/playGame()). Passing --useOils=true (or any of the oil flags) on the command
-  // line skips the prompt and uses the flag values directly, for scripted/non-interactive use.
+  // OFF by default (2026-09-10, per user): using an oil spends real limited inventory on the
+  // user's actual account, so the CLI now asks interactively each run rather than silently
+  // deciding on its own -- see promptForOilConfig() below, called from the CLI entry point only
+  // (never from library/test usage of run()/playGame()). Passing --useOils=true (or any of the
+  // oil flags) on the command line skips the prompt and uses the flag values directly, for
+  // scripted/non-interactive use.
   useOils: false, oilItemId: 972, oilTierId: 0, oilPHitThreshold: 0.75,
-  // maxFish is a TOTAL across as many separate games as it takes -- a loss ends the current game,
-  // not the batch; run() keeps starting new games until maxFish total fish have been played or
-  // the daily cap is hit. maxGames is now just an optional extra safety cap on game count (null =
-  // uncapped); most users never need it. See run()'s own comment for the reasoning.
+  // maxFish is a TOTAL across as many separate games as it takes (2026-09-10 change) -- a loss
+  // ends the current game, not the batch; run() keeps starting new games until maxFish total fish
+  // have been played or the daily cap is hit. maxGames is now just an optional extra safety cap on
+  // game count (null = uncapped); most users never need it. See run()'s own comment for the reasoning.
   maxGames: null,
   maxFish: 6,
   maxTurns: 500, // was 60 -- too low for multi-fish batches: empirically ~5 turns/fish (n=83 real
@@ -87,6 +82,46 @@ const cfg = {
                      // candidate positions get evaluated. Calibrated to flip the live 2026-09-09
                      // case (0.729 edge vs 0.609 equal-cost interior vs 0.504 redraw) toward the
                      // interior play; not yet validated against a larger live sample.
+  riskAversionWeight: 0.5, // MEASURED 2026-09-14, user-directed investigation. The recursive
+                     // win-probability search was picking a genuinely weak card (e.g. 10% pHit)
+                     // over a clearly stronger one sitting in the SAME hand (e.g. 50% pHit) --
+                     // confirmed live in two real casts (#349 T5: card80 10% chosen over card88
+                     // 50%; #381 T1: card110's 17% crit-only gamble chosen over card108's 37.5%)
+                     // -- and mining every real turn's logged handEval found this wasn't a rare
+                     // fluke: 88 real turns confidently (>0.02 val gap) preferred a card >=15pp
+                     // worse on pHit, and fish that did this lost far more than fish that didn't,
+                     // band-for-band (low 79.6% vs 92.0% win, mid 70.0% vs 77.8%, high 36.8% vs
+                     // 94.4%) -- consistent direction in all three bands, though correlational.
+                     // User's diagnosis: the raw win-probability math already prices a miss's
+                     // catch-bar cost, but not the EXTRA risk of betting against the odds, nor
+                     // the extra value of a hit that leaves you playing from a stronger position.
+                     // riskAdjust() subtracts this weight times a play's own P(miss) -- but ONLY
+                     // when RANKING candidate plays against each other (see the three call sites
+                     // below); the value that feeds the play-vs-redraw decision, recursion, and
+                     // logging is always the TRUE undiscounted number. That scoping was itself a
+                     // real fix, not just style: an earlier version applied the discount directly
+                     // to playValue()'s returned number, which then ALSO fed the redraw decision --
+                     // this pushed redraw rate up ~30% (280->363 of 863 real turns) and made
+                     // progress-per-mana measurably WORSE in every band (1.762->1.534 overall),
+                     // because it was discouraging plays broadly rather than specifically
+                     // preferring a reliable play over a risky one when both were available.
+                     // Rescoped to a pure ranking tiebreak (this version): all 104 unit tests
+                     // pass, play/redraw counts stay ~flat vs baseline (583/280 -> 589/274 of 863
+                     // real turns), hit-rate rose 72.2%->76.1%, and -- the metric that actually
+                     // matters, since mana is the hard constraint the game imposes -- catch-bar
+                     // progress per mana spent rose 1.762->1.931 (+9.6%), holding in every HP band.
+                     // 0.5 was chosen from a weight sweep (0, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.7, 1
+                     // on a 166-turn sample, confirming the top two candidates on the full
+                     // 863-turn sample): progress/mana rose smoothly to a peak at 0.5 then fell
+                     // back by 0.7-1.0, so this is a real peak, not a monotonic "more is better".
+                     // All measurements above are OFFLINE per-turn replay against real historical
+                     // casts (see replay-efficiency2.js / sweep.js in the session scratchpad, not
+                     // committed to this repo) -- not yet validated with a live run. Those replays
+                     // ran with closeCallGap:0 (depth-3 escalation OFF) for speed/determinism, so
+                     // they don't cover the interaction documented at the escalation block below --
+                     // that fix is necessary for correctness (escalation was capable of silently
+                     // undoing this whole feature) but its effect on the measured numbers above is
+                     // unverified, since escalation only fires on already-close top-2 calls.
   catchBonus:    8,
   escapePenalty: 16,
   minHitToPlay:  0.5,
@@ -117,40 +152,112 @@ const cfg = {
                        // observed), so 0.6*coverage was scoring ~0.53 against a REAL observed
                        // stuck hit rate of just 0.286 (n=28; 0.25 at coverage 0.89 specifically,
                        // n=24) -- 2026-09-09 audit, full-dataset recalibration.
+
+  // 2026-09-22 audit (n=4029 real turns, pooled across every recorded live game, all fish sizes):
+  // leafEstimate's old affordability math (mana / playsNeeded) implicitly assumed every mana point
+  // buys a PLAY -- it had zero model of redraws, which are a real, roughly constant ~35% of all
+  // turns regardless of fish size (measured 32.8%-37.2% across HP bands, not meaningfully
+  // fish-size-dependent, so this is a single pooled constant rather than a per-band one).
+  // Investigated live because 28-30hp losses looked redraw-heavy in a small sample (n=5), but that
+  // didn't replicate at scale (n=50: losses actually had a LOWER redraw rate than same-band wins,
+  // 27.5% vs 35.3% -- the small sample was noise). What DOES hold at scale: winning 28-30hp fights
+  // already spend close to the full 14-mana budget in the tail (p95 mana-used == 14, 25.3% of wins
+  // use >=12/14) -- so this band's budget has little real slack, and ANY unmodeled tax shrinks an
+  // already-thin margin. Since redraw rate is ~constant per TURN but big fish need more total turns,
+  // the absolute mana this omission misses scales with turns-needed even though the rate doesn't --
+  // exactly the mechanism the user's intuition pointed at, just not visible in the raw redraw-rate
+  // comparison. These three constants (measured, not fit): redrawRateEstimate = fraction of all
+  // turns that are redraws; avgRedrawManaCost = mean mana cost of a redraw turn (~= mean hand size
+  // at redraw time); avgPlayManaCost = mean mana cost of a play turn (~1, most cards cost 1). See
+  // leafEstimate() for how these combine into an amortized effective mana-cost-per-play.
+  redrawRateEstimate: 0.351,
+  avgRedrawManaCost: 2.377,
+  avgPlayManaCost: 0.924,
   redrawPlaysBuffer: 0,
   alternateMinHp: 21, // CONFIRMED by user 2026-09-09: 21-HP fish themselves CAN alternate (not just
                        // fish strictly above 21) -- do not raise this to 22. The 2026-09-09 audit's
                        // sample of 21-HP fish (n=8, all locked always-X after 1 move) undersampled
                        // true alternators at exactly 21; this is a settled game-mechanics fact, not
                        // a statistical judgment call.
-  alternateContinuationPrior: 0.75, // P(next move continues at the SAME distance as the one just
-                       // observed) for a canAlt-eligible fish after exactly one move. Measured live
-                       // 2026-09-06: 5 of 6 canAlt fish settled into always-X after their first move,
-                       // only 1 truly alternated (small n -- revisit). 0.75 is a conservative read of
-                       // that ~83% point estimate. Re-checked 2026-09-09 against the full dataset
-                       // (n=12 fish >=21hp): 10/12 same, 2/12 flip on the first transition (0.833),
-                       // consistent with 0.75 -- left unchanged.
-  threeMoveMinHp: 29, // CONFIRMED live 2026-09-10 (user): fish at 29hp+ can take a 3-STEP move in
-                       // one turn (never seen below 29; user separately confirmed a 30hp fish shows
-                       // it too). The real signal is PATH LENGTH (lastMovePath.length), not net
-                       // Manhattan displacement -- a 3-step path can double back and land only 1 or
-                       // 2 squares from start (mathematically, 3 orthogonal unit steps can only ever
-                       // net to 1 or 3, never 0 or 2 -- parity: an even net in each axis needs an
-                       // even step count on that axis, and two even counts can't sum to the odd
-                       // total of 3). Confirmed against real history: only fishMaxHp=29 ever shows a
-                       // 3-length path (9 of 56 recorded 29hp turns); every other size (14-30 except
-                       // 29) never does. NOT every fish >=29hp uses it, though -- only 2 of 9 real
-                       // 29hp fish encounters showed any 3-step move at all; the other 7 were
-                       // ordinary always-1/always-2/alternating-1-2, identical to smaller fish. The
-                       // two confirmed 3-capable fish each locked into a clean, perfectly regular
-                       // alternation once measured by path length: one alternated 1<->3, the other
-                       // 2<->3 -- never all three, never a fixed "always-3". Sample size is tiny (2
-                       // real 3-capable fish, vs. the dozens that established alternateMinHp) --
-                       // revisit thresholds/priors below as more real fish confirm or complicate this.
-  threeMoveContinuationPrior: 0.75, // reuses alternateContinuationPrior's value/reasoning for now --
-                       // NOT independently measured (no real data yet on how often a 3-capable fish
-                       // continues at the same distance vs switches after one move). Placeholder
-                       // pending more live 29hp+ fish.
+  alternateContinuationPrior: 0.75, // SUPERSEDED 2026-09-13 by moveDistPrior[band].cont, which
+                       // measures this per HP band instead of using one number for every fish size.
+                       // Kept only as the fallback when a caller supplies neither fishMaxHp nor a
+                       // recognizable band. History: measured live 2026-09-06 (5 of 6 canAlt fish
+                       // locked into always-X after their first move) and re-checked 2026-09-09
+                       // (n=12 fish >=21hp, 10/12 same). Both samples were dominated by small fish,
+                       // which is why they read high -- see moveDistPrior for the split.
+  threeMoveMinHp: 28, // CONFIRMED live 2026-09-10 (user): fish at 29hp+ can take a 3-STEP move in
+                       // one turn (30hp confirmed too). LOWERED to 28 on 2026-09-13 after a live
+                       // 28hp fish ("Gulp") showed a clean, real, fully regular 1<->3 alternation
+                       // across 6 real turns (lastMovePath lengths exactly [3,1,3,1,3,1], not net
+                       // displacement -- see below). The real signal is PATH LENGTH
+                       // (lastMovePath.length), not net Manhattan displacement -- a 3-step path can
+                       // double back and land only 1 or 2 squares from start (mathematically, 3
+                       // orthogonal unit steps can only ever net to 1 or 3, never 0 or 2 -- parity:
+                       // an even net in each axis needs an even step count on that axis, and two
+                       // even counts can't sum to the odd total of 3). Confirmed against real
+                       // history: fishMaxHp 28 and 29 are the only sizes that ever show a 3-length
+                       // path; every other size (14-30 except 28/29) never does. NOT every fish
+                       // >=28hp uses it, though -- only 3 of 10 real 28-29hp fish encounters showed
+                       // any 3-step move at all; the rest were ordinary always-1/always-2/
+                       // alternating-1-2, identical to smaller fish. Every confirmed 3-capable fish
+                       // locked into a clean, perfectly regular alternation once measured by path
+                       // length: 1<->3 (seen twice) or 2<->3 (seen once) -- never all three, never a
+                       // fixed "always-3". Sample size is still small (3 real 3-capable fish, vs. the
+                       // dozens that established alternateMinHp) -- revisit thresholds/priors below
+                       // as more real fish confirm or complicate this, especially whether 27hp or
+                       // below can ever show it too.
+  threeMoveContinuationPrior: 0.75, // SUPERSEDED 2026-09-13 by moveDistPrior.high.cont (measured
+                       // 0.58, n=66). Kept only as a fallback; see alternateContinuationPrior.
+  // ---- moveDistPrior: what distance will the fish move next? -------------------------------
+  // Measured 2026-09-13 over the full 342-cast replay set (1,734 real moves). Move length is
+  // ALWAYS lastMovePath.length, never net displacement (see threeMoveMinHp on why that matters).
+  // Bands: low = <=21hp, mid = 22-27hp, high = >=threeMoveMinHp.
+  //
+  // This replaces TWO guesses, both of which were materially wrong:
+  //
+  // 1. The turn-0 opening belief used to be a raw union of the dist-1/2/3 candidate sets, summed
+  //    WITHOUT normalizing each distance to its own total. Because a 3-step walk has ~5x as many
+  //    distinct paths as a 1-step one, raw path count silently handed d=3 roughly 59-63% of the
+  //    opening belief on every >=28hp fish -- against a MEASURED 5% real rate. Same bug, milder,
+  //    for d=2 vs d=1 (71%/29% assigned vs ~50/50 measured). Each branch is now normalized to
+  //    its own total first, then scaled by `first` below, so extra paths no longer buy belief.
+  //
+  // 2. The one-move-observed continuation prior was a flat 0.75 for every fish. Measured, it is
+  //    strongly size-dependent: small fish lock into a fixed always-X regime essentially always,
+  //    while big fish are close to a coin flip on each move.
+  //      <=21hp:  first transition repeated the same distance 240/240 = 100%
+  //               (counted per FISH, not per transition -- transitions within one fish are
+  //               NOT independent: an alternator switches on every one, a non-alternator on
+  //               none, so a transition count inflates the evidence ~3x. 0 alternators in
+  //               157 fish with >=4 moves; 95% upper bound on P(alternating) ~1.9%.)
+  //      22-27hp: 22/42 = 52%
+  //      >=28hp:  38/66 = 58%
+  //
+  // Backtested over the 680 real turns these priors actually touch (0 or 1 observed moves;
+  // >=2 moves still uses the exact regime detection below, which is unchanged). Probability
+  // assigned to the cell the fish really moved to: low 0.3187 -> 0.3181 (flat), mid 0.1355 ->
+  // 0.1554 (+14.7%), high 0.1012 -> 0.1418 (+40.1%), overall +13.3%; top-1 accuracy on >=28hp
+  // fish 18.9% -> 25.8%. Holds out of sample: priors fitted on casts 1-171 and scored on the
+  // held-out casts 172-342 give +33.4% on the high band, +11.7% overall.
+  moveDistPrior: {
+    // first:null => keep the legacy raw path-count union at turn 0 for this band. Deliberate:
+    // flattening the low band to 0.50/0.50 was worth +2.9% probability mass but COST 4.6 points
+    // of top-1 accuracy (33.8% -> 29.2%), i.e. at short range the path-count skew is picking up
+    // a real within-grid landing bias that a flat prior throws away. Only mid/high use `first`.
+    low:  { first: null,                          cont: 0.97 },
+    mid:  { first: { 1: 0.50, 2: 0.50, 3: 0    }, cont: 0.55 },
+    high: { first: { 1: 0.50, 2: 0.45, 3: 0.05 }, cont: 0.55 },
+  },
+  // Upper HP bound of the "low" band. NOT the same as alternateMinHp (21), and the difference is
+  // deliberate: the user confirmed 2026-09-09 that 21hp fish CAN alternate, so canAlt stays true
+  // at 21 and we keep hedging -- but not one ever has, in any logged cast (31 at exactly 21hp in
+  // the replay set, 33 counting segmented run files; band-wide, 0 alternators in 157 <=21hp fish with >=4 moves (enough to tell), 0 in all 240 with >=2 moves),
+  // so the hedge is 3% via low.cont=0.97 -- above the ~1.9% upper bound, deliberately generous
+  // rather than the 25% a flat 0.75 was spending. Both facts can hold at once if alternation is
+  // gated on something rarer than HP (quality is the obvious candidate -- q1 fish are exactly the
+  // 14-21hp range), so this narrows the hedge without asserting 21hp fish never alternate.
+  moveBandLowMaxHp: 21,
   lookaheadDepth: 2,
   lookaheadMaxCombos: 15,
   lookaheadShortlist: 4,
@@ -166,10 +273,31 @@ const cfg = {
   // single-threaded/synchronous, so a real preemptive timeout isn't possible for pure CPU-bound
   // recursion) and throws LookaheadBudgetExceeded once spent; chooseAction() catches that and keeps
   // the original depth-2 ranking untouched -- escalation can only match or improve depth-2, never
-  // make the decision worse or block play past this budget. 15s (user-approved 2026-09-10, raised
-  // from 2000ms) -- this is pure local CPU time, no API/LLM cost, so the only real tradeoff is turn
-  // latency during a live run.
-  depth3TimeBudgetMs: 15000,
+  // make the decision worse or block play past this budget. This is pure local CPU time, no API/LLM
+  // cost, so the only real tradeoff is turn latency during a live run.
+  //
+  // Raised 15000 -> 90000 (user, 2026-09-19, explicit: prioritize decision quality over turn
+  // latency "more than we have been"). Immediate cause: the closeCallGap fix shipped the same day
+  // (see fishing-notes.md) made escalation correctly TRIGGER on a real losing cast's play-vs-redraw
+  // call that it had silently never triggered on before (a gap-check scale bug) -- but that specific
+  // case needed ~59s uncapped to actually finish, well past the old 15s budget, so it triggered,
+  // timed out, and fell back to the same wrong answer anyway. 90s covers that case with headroom
+  // without reaching for the 443s worst-case tail. Turn snapshots now record `escalated` /
+  // `escalationAttempted` / `escalationTimedOut` (previously untracked) specifically so this number
+  // can be revisited from real frequency/timeout data instead of a single example once enough live
+  // casts have run under it.
+  depth3TimeBudgetMs: 90000,
+
+  // --- draft/card-selection knobs (2026-09-12, see scoreCard/rankDraft) ---------------------
+  // Small additive nudge toward drafting a card that covers board zones the current deck is
+  // thin on, WITHOUT penalizing a duplicate of an already-strong card (user's explicit call:
+  // duplicates of strong cards are fine) -- static scores typically range roughly -6 to +20, so
+  // this is deliberately small enough to only break near-ties, never override a real quality gap.
+  draftDeckAwareWeight: 3,
+  // Minimum number of real, playable handEval samples (from actually-logged turns across
+  // runs/*.json) a card needs before its empirical average value is trusted as a draft-score
+  // multiplier -- below this it's noise, so scoreCard() falls back to the static heuristic alone.
+  empiricalMinSamples: 8,
 };
 
 // Escalation-only cooperative timeout: lookaheadValue() checks this deadline and throws to unwind
@@ -182,6 +310,9 @@ let lookaheadDeadline = null;
 let stop = false;
 let lastRun = null;
 let lastActionToken = null;
+// Cached once per process (see run()) rather than re-scanned on every draft -- loadEmpiricalPriors()
+// reads every file under runs/, which only needs to happen once per CLI invocation.
+let empiricalPriorsCache = null;
 const log  = (...a) => cfg.verbose && console.log('[FishBot]', ...a);
 const warn = (...a) => console.warn('[FishBot]', ...a);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -316,9 +447,20 @@ function reachableWeighted(cell, prev, dist) {
 // hypothetical future cell and fall back to net-distance via man() -- an accepted approximation,
 // same class as the pre-existing one (net distance was always exact for dist<=2, so this gap only
 // exists for 3-capable fish and only in the simulated-future case).
+// Which moveDistPrior band a fish falls in. Prefers the real fishMaxHp when the caller threads it
+// through; otherwise infers from the canAlt/canThree flags so older callers (and tests that pass
+// only those) still resolve to a sensible band instead of silently defaulting.
+function moveBand(fishMaxHp, canAlt, canThree) {
+  if (fishMaxHp == null) return canThree ? 'high' : canAlt ? 'mid' : 'low';
+  if (fishMaxHp <= cfg.moveBandLowMaxHp) return 'low';
+  return fishMaxHp >= cfg.threeMoveMinHp ? 'high' : 'mid';
+}
+
 function predict(history, opts) {
   const canAlt = !opts || opts.canAlternate !== false;
   const canThree = !!(opts && opts.canThree);
+  const bandPrior = cfg.moveDistPrior[moveBand(opts && opts.fishMaxHp, canAlt, canThree)]
+                    || cfg.moveDistPrior.low;
   const cur = history[history.length - 1];
   const prev = history.length >= 2 ? history[history.length - 2] : null;
   const tel = opts && opts.telegraph;
@@ -330,9 +472,33 @@ function predict(history, opts) {
     const known = moveLens && moveLens[i - 1] != null ? moveLens[i - 1] : man(history[i-1], history[i]);
     dists.push(known);
   }
-  const unionW = () => {
+  const DISTS = canThree ? [1, 2, 3] : [1, 2];
+  // Merge the per-distance candidate sets, each NORMALIZED to its own total first so that a
+  // distance with more distinct paths doesn't thereby collect more belief, then scaled by the
+  // caller's per-distance weight. Relative weights WITHIN a branch are preserved untouched --
+  // those encode the real landing skew (e.g. the dist-2 diagonal) and are separately validated.
+  const blend = (weights) => {
     const totals = new Map();
-    for (const d of (canThree ? [1, 2, 3] : [1, 2])) {
+    for (const d of DISTS) {
+      const share = weights[d] || 0;
+      if (share <= 0) continue;
+      const branch = reachableWeighted(cur, prev, d);
+      const tot = branch.reduce((s, x) => s + x.w, 0);
+      if (tot <= 0) continue;
+      for (const { cell, w } of branch) {
+        const key = K(...cell), add = (w / tot) * share;
+        const e = totals.get(key);
+        if (e) e.w += add; else totals.set(key, { cell, w: add });
+      }
+    }
+    return [...totals.values()];
+  };
+  // Legacy raw union: sums branches WITHOUT normalizing, so each distance's share is decided by
+  // its path count. Retained only for the low band, where it measurably beats a flat prior on
+  // top-1 accuracy -- see moveDistPrior.low's comment.
+  const rawUnionW = () => {
+    const totals = new Map();
+    for (const d of DISTS) {
       for (const { cell, w } of reachableWeighted(cur, prev, d)) {
         const key = K(...cell);
         const e = totals.get(key);
@@ -341,6 +507,7 @@ function predict(history, opts) {
     }
     return [...totals.values()];
   };
+  const unionW = () => bandPrior.first ? blend(bandPrior.first) : rawUnionW();
   // After exactly ONE observed move, favor the fish CONTINUING at that same distance over
   // switching to a different one -- most alternation-eligible fish settle into a fixed always-X
   // regime rather than genuinely alternate (measured live: 5 of 6 canAlt fish today locked into
@@ -352,21 +519,35 @@ function predict(history, opts) {
   // split -- see threeMoveContinuationPrior's comment; only reduces to the original exact behavior
   // when canThree is false, since then "others" has exactly one entry).
   const favorContinuation = (distSame) => {
-    const others = canThree ? [1, 2, 3].filter(d => d !== distSame) : [distSame === 1 ? 2 : 1];
-    const prior = canThree ? cfg.threeMoveContinuationPrior : cfg.alternateContinuationPrior;
-    const sumW = arr => arr.reduce((s, x) => s + x.w, 0);
-    const totals = new Map();
-    const add = (arr, total, share) => { if (total <= 0 || share <= 0) return;
-      for (const { cell, w } of arr) { const key = K(...cell), scaled = (w / total) * share;
-        const e = totals.get(key); if (e) e.w += scaled; else totals.set(key, { cell, w: scaled }); } };
-    const branchSame = reachableWeighted(cur, prev, distSame);
-    add(branchSame, sumW(branchSame), prior);
-    const otherShare = (1 - prior) / others.length;
-    others.forEach(d => { const branch = reachableWeighted(cur, prev, d); add(branch, sumW(branch), otherShare); });
-    return [...totals.values()];
+    const others = DISTS.filter(d => d !== distSame);
+    const prior = bandPrior.cont != null
+      ? bandPrior.cont
+      : (canThree ? cfg.threeMoveContinuationPrior : cfg.alternateContinuationPrior);
+    // Split the non-continuation share across the other distances in proportion to this band's
+    // measured base rate rather than evenly -- an even split would hand a >=28hp fish's "it
+    // switched" mass 50% to d=3, which is measured at ~5%. Floored so a base rate of 0 (e.g.
+    // d=3 in a band that has never shown one) still leaves a small non-zero hedge.
+    const base = bandPrior.first || { 1: 0.5, 2: 0.5, 3: canThree ? 0.05 : 0 };
+    const rate = d => Math.max(base[d] || 0, 0.02);
+    const baseTot = others.reduce((s, d) => s + rate(d), 0) || 1;
+    const weights = { [distSame]: prior };
+    others.forEach(d => { weights[d] = (1 - prior) * rate(d) / baseTot; });
+    return blend(weights);
   };
   let W, why, regimeKnown = true;
   if (!dists.length) { W = unionW(); why = 'regime unknown (cover 1+2' + (canThree ? '+3' : '') + ')'; regimeKnown = false; }
+  // Deliberately a HARD lock, and the data says that is exactly right: not one <=21hp fish has
+  // ever been seen to change its distance -- 0 of 157 fish with >=4 observed moves, 0 of 240
+  // with >=2. (Count FISH, not transitions: alternation is a per-fish property, so transitions
+  // within a cast are not independent evidence and quoting them inflates the sample ~3x.)
+  // A first pass on 2026-09-13 reported 6 breaks across 2 casts and briefly tried hedging them;
+  // both of those "casts" turned out to be CONCATENATED MULTI-FISH records -- two different fish's
+  // regimes spliced into one turn list -- not a fish that switched. See the data-quality warning
+  // about segmenting on TURN-level fishMaxHp in fishing-notes.md before re-running this analysis.
+  // The hedge was reverted: it tripled the candidate set (3 cells -> 9) and diluted the exact
+  // 50/25/25 dist-2 weights several validated tests pin, all to model an event with zero observed
+  // instances. (Its apparent gain came from scoring by mean log-prob, which punishes an assigned
+  // zero almost without bound -- a trap worth remembering when evaluating prediction changes.)
   else if (!canAlt) { const dist = dists.every(t => t === 2) ? 2 : 1; W = reachableWeighted(cur, prev, dist); why = 'regime always-' + dist + ' (≤21hp, locked)'; }
   else if (dists.length < 2) { W = favorContinuation(dists[0]); why = 'could still alternate (favor dist-' + dists[0] + ' continuing)'; regimeKnown = false; }
   else {
@@ -571,10 +752,28 @@ function leafEstimate(fishHp, fishMaxHp, mana, focus, defs, hand, pool) {
   const avgHeal = avgMissHeal(accessible, defs) ?? avgMissHeal(Object.keys(defs || {}), defs) ?? 3;
   const netPerPlay = Math.max(0.5, effectiveHitRate * avgDmg - (1 - effectiveHitRate) * avgHeal);
   const playsNeeded = fishHp / netPerPlay;
-  const affordability = playsNeeded > 0 ? Math.max(0, Math.min(1, mana / playsNeeded)) : 1;
+  // Redraws are a real, roughly constant tax on the mana budget (~35% of all turns, any fish size
+  // -- see cfg.redrawRateEstimate's comment) that this affordability estimate used to ignore
+  // entirely, implicitly pricing every future play at ~1 mana. For every real play turn, the
+  // expected number of accompanying redraw turns is r/(1-r) (r = redrawRateEstimate), each costing
+  // avgRedrawManaCost -- amortize that into the effective mana cost of one unit of progress instead
+  // of assuming mana converts 1:1 into plays.
+  const effectiveManaCostPerPlay = cfg.avgPlayManaCost
+    + (cfg.redrawRateEstimate / (1 - cfg.redrawRateEstimate)) * cfg.avgRedrawManaCost;
+  const totalManaNeeded = playsNeeded * effectiveManaCostPerPlay;
+  const affordability = totalManaNeeded > 0 ? Math.max(0, Math.min(1, mana / totalManaNeeded)) : 1;
   return progress * affordability;
 }
 
+// Risk-adjusted score for RANKING candidate plays against each other -- see cfg.riskAversionWeight
+// for the full story. Never used as a returned/propagated value; callers keep the TRUE playValue()
+// for everything downstream (redraw comparison, recursion, logging), and use this only to decide
+// WHICH candidate wins a comparison.
+function riskAdjust(val, branches) {
+  let missMass = 0;
+  for (const { a, p } of branches) if (a < 0) missMass += p;
+  return val - cfg.riskAversionWeight * missMass;
+}
 function playValue(defs, def, pos, cardId, handIdx, state, depth) {
   const { hand, mana, focus, fishHp, fishMaxHp, hist, fullDeck, discard, canAlt, canThree } = state;
   const cMana = def.manaCost ?? 1;
@@ -625,7 +824,7 @@ function evaluateRedraw(defs, state, depth, cost) {
   // Redrawing doesn't change whether/where the fish moves this turn -- a live telegraph (only
   // ever set on the top-level state, see chooseAction()) is just as valid here as it was for the
   // `pr` chooseAction() already computed for the play-side comparison.
-  const pr = predict(hist, { canAlternate: canAlt, canThree, telegraph });
+  const pr = predict(hist, { canAlternate: canAlt, canThree, telegraph, fishMaxHp });
   const pool = drawPool({ fullDeck, hand, discard });
   const drawN = Math.min(3, pool.length);
   if (drawN === 0) return -Infinity;
@@ -663,16 +862,17 @@ function lookaheadValue(defs, state, depth) {
   const { hand, mana, focus, bobber, fishHp, fishMaxHp, hist, canAlt, canThree } = state;
   if (mana <= 0) return LA_LOSS;
   if (hand.length === 0) return evaluateRedraw(defs, state, depth, 0);
-  const pr = predict(hist, { canAlternate: canAlt, canThree });
+  const pr = predict(hist, { canAlternate: canAlt, canThree, fishMaxHp });
   const catchBar = fishMaxHp - fishHp;
-  let best = -Infinity;
+  let best = -Infinity, bestRiskAdj = -Infinity;
   hand.forEach((cardId, handIdx) => {
     const def = defs[cardId]; if (!def) return;
     if ((def.manaCost ?? 1) > mana) return;
     const candidates = positionsFor(def, bobber, focus, pr, catchBar, fishMaxHp).slice(0, cfg.lookaheadShortlist);
     for (const pos of candidates) {
       const val = playValue(defs, def, pos, cardId, handIdx, state, depth);
-      if (val > best) best = val;
+      const adj = riskAdjust(val, pos.branches);
+      if (adj > bestRiskAdj) { bestRiskAdj = adj; best = val; }
     }
   });
   if (mana >= hand.length) {
@@ -735,10 +935,11 @@ function chooseAction(gs, hist, pr, allowRedraw) {
     if (cMana > gs.playerHp) { handEval.push({ cardId, handIdx, affordable: false }); return; }
     const candidates = positionsFor(def, gs.focusPoint, gs.focusMeter, pr, gs.fishMaxHp - gs.fishHp, gs.fishMaxHp)
       .slice(0, cfg.lookaheadShortlist);
-    let bestPos = null, zeroCost = null;
+    let bestPos = null, bestPosRiskAdj = -Infinity, zeroCost = null;
     for (const pos of candidates) {
       const val = playValue(defs, def, pos, cardId, handIdx, state, depth);
-      if (!bestPos || val > bestPos.val) bestPos = { pos, val };
+      const adj = riskAdjust(val, pos.branches);
+      if (adj > bestPosRiskAdj) { bestPosRiskAdj = adj; bestPos = { pos, val }; }
       if (pos.moveCost === 0 && (!zeroCost || val > zeroCost.val)) zeroCost = { pos, val };
     }
     if (zeroCost) {
@@ -756,7 +957,8 @@ function chooseAction(gs, hist, pr, allowRedraw) {
       : 0;
     handEval.push({ cardId, handIdx, affordable: true, playable: true, val: bestPos.val,
       pHit: +pHit.toFixed(3), critChance: +critChance.toFixed(3), focus: bestPos.pos.focus, moveCost: bestPos.pos.moveCost });
-    if (!bestPlay || bestPos.val > bestPlay.val) bestPlay = { val: bestPos.val, handIdx, cardId, mana: cMana, focus: bestPos.pos.focus, moveCost: bestPos.pos.moveCost, pHit, ev: bestPos.pos.ev };
+    const bestPosAdj = riskAdjust(bestPos.val, bestPos.pos.branches);
+    if (!bestPlay || bestPosAdj > bestPlay.riskAdj) bestPlay = { val: bestPos.val, riskAdj: bestPosAdj, handIdx, cardId, mana: cMana, focus: bestPos.pos.focus, moveCost: bestPos.pos.moveCost, pHit, ev: bestPos.pos.ev };
   });
   let redrawVal = -Infinity;
   if (allowRedraw !== false && (gs.hand || []).length > 0 && gs.playerHp >= gs.hand.length) {
@@ -767,13 +969,35 @@ function chooseAction(gs, hist, pr, allowRedraw) {
   // Scoped to ONLY the top-two candidates at the TOP level, not recursively inside lookaheadValue's
   // own future-ply search -- escalating there too would multiply the branching factor through the
   // whole tree, the same blowup the shortlist-rerank fix upstream of this deliberately avoided.
-  let escalated = false;
+  let escalated = false, escalationAttempted = false, escalationTimedOut = false;
   if (cfg.closeCallGap > 0) {
+    // Selecting/gap-checking here MUST use the same risk-adjusted score bestPlay was picked with
+    // above (rank field), or escalation can pick and promote a DIFFERENT top-2 than the real
+    // decision is actually contesting -- e.g. re-litigating card80 vs card85 (already-equivalent
+    // options bestPlay already beat) while never even looking at the risk-preferred card88, then
+    // overwriting bestPlay with whichever of ITS OWN top-2-by-raw-val wins. Confirmed live
+    // 2026-09-14: this exact bug silently undid the cast #349 regression test's fix the moment
+    // depth-3 escalation was left at its default (only caught because the earlier sanity checks
+    // that validated the fix had closeCallGap explicitly disabled, which hid it). redraw has no
+    // branches to discount -- it keeps its true val, exactly as bestPlay-vs-redraw always has.
     const cands = handEval.filter(h => h.playable)
-      .map(h => ({ kind: 'play', handIdx: h.handIdx, cardId: h.cardId, val: h.val }));
-    if (redrawVal > -Infinity) cands.push({ kind: 'redraw', val: redrawVal });
-    cands.sort((a, b) => b.val - a.val);
+      .map(h => ({ kind: 'play', handIdx: h.handIdx, cardId: h.cardId, val: h.val,
+        rank: riskAdjust(h.val, posByHandIdx[h.handIdx].branches) }));
+    if (redrawVal > -Infinity) cands.push({ kind: 'redraw', val: redrawVal, rank: redrawVal });
+    cands.sort((a, b) => b.rank - a.rank);
+    // Gap check MUST use raw val, not rank -- confirmed live 2026-09-19: redraw's rank is always
+    // its raw val (never risk-discounted, per the comment above), but a play's rank IS discounted
+    // by riskAdjust whenever it carries any real miss risk. That means a genuinely-close play-vs-
+    // redraw call (raw gap 0.0079 on a real cast, well under the 0.01 threshold) can show a rank
+    // gap several times larger (0.047 on that same cast) purely from the asymmetric discount --
+    // not because the two options are actually far apart. The real, final decision this escalation
+    // exists to double-check is made with raw vals (`redrawVal > bestPlay.val`, see the `return`
+    // statements below) -- so the closeness check has to use the same scale that decision uses, or
+    // it silently never escalates exactly the cases where a risky-but-live card is being compared
+    // against redraw. rank stays the sort key (still needed to pick the RIGHT two candidates -- the
+    // 2026-09-14 fix this comment block already describes), only the gap metric changes.
     if (cands.length >= 2 && (cands[0].val - cands[1].val) < cfg.closeCallGap) {
+      escalationAttempted = true;
       const prevDeadline = lookaheadDeadline;
       lookaheadDeadline = Date.now() + cfg.depth3TimeBudgetMs;
       try {
@@ -788,11 +1012,12 @@ function chooseAction(gs, hist, pr, allowRedraw) {
           if (c.kind === 'redraw') { redrawVal = c.val3; return; }
           const he = handEval.find(h => h.handIdx === c.handIdx);
           if (he) he.val = c.val3;
+          const pos = posByHandIdx[c.handIdx];
+          const adj3 = riskAdjust(c.val3, pos.branches);
           if (bestPlay && bestPlay.handIdx === c.handIdx) {
-            bestPlay.val = c.val3;
-          } else if (!bestPlay || c.val3 > bestPlay.val) {
-            const pos = posByHandIdx[c.handIdx];
-            bestPlay = { val: c.val3, handIdx: c.handIdx, cardId: c.cardId,
+            bestPlay.val = c.val3; bestPlay.riskAdj = adj3;
+          } else if (!bestPlay || adj3 > bestPlay.riskAdj) {
+            bestPlay = { val: c.val3, riskAdj: adj3, handIdx: c.handIdx, cardId: c.cardId,
               mana: defs[c.cardId].manaCost ?? 1, focus: pos.focus, moveCost: pos.moveCost,
               pHit: he ? he.pHit : undefined, ev: pos.ev };
           }
@@ -802,7 +1027,10 @@ function chooseAction(gs, hist, pr, allowRedraw) {
         escalated = true;
       } catch (e) {
         if (!(e instanceof LookaheadBudgetExceeded)) throw e;
-        // ran out of time -- abandon the escalation, keep the original depth-2 ranking untouched
+        // ran out of time -- abandon the escalation, keep the original depth-2 ranking untouched.
+        // escalationTimedOut is the signal that tells us (via the persisted turn snapshot -- see
+        // playGame()) how often this actually happens live, which nothing tracked before 2026-09-19.
+        escalationTimedOut = true;
       } finally {
         lookaheadDeadline = prevDeadline;
       }
@@ -835,33 +1063,102 @@ function chooseAction(gs, hist, pr, allowRedraw) {
     // Return directly rather than falling through to the value comparison below -- that
     // comparison is exactly what this rule exists to override (redrawVal is still numerically
     // higher than this card's own recursive value; that's the whole reason we're forcing it).
-    return { type: 'play', mv: forcedMv, redrawVal, handEval, escalated };
+    return { type: 'play', mv: forcedMv, redrawVal, handEval, escalated, escalationAttempted, escalationTimedOut };
   }
 
-  if (!bestPlay && redrawVal === -Infinity) return { type: 'none', handEval };
-  if (!bestPlay || redrawVal > bestPlay.val) return { type: 'redraw', val: redrawVal, playVal: bestPlay && bestPlay.val, handEval, escalated };
-  return { type: 'play', mv: bestPlay, redrawVal, handEval, escalated };
+  if (!bestPlay && redrawVal === -Infinity) return { type: 'none', handEval, escalated, escalationAttempted, escalationTimedOut };
+  if (!bestPlay || redrawVal > bestPlay.val) return { type: 'redraw', val: redrawVal, playVal: bestPlay && bestPlay.val, handEval, escalated, escalationAttempted, escalationTimedOut };
+  return { type: 'play', mv: bestPlay, redrawVal, handEval, escalated, escalationAttempted, escalationTimedOut };
 }
 
 /* ---- deck draft ----------------------------------------------------------------- */
-function scoreCard(def) {
+// scoreCard/rankDraft take an OPTIONAL opts object ({ zoneDensity, empirical }) so every existing
+// caller/test that passes just a card def (or just the offered array) keeps working unchanged --
+// deck-awareness and empirical priors are additive nudges on top of the static heuristic below,
+// never a replacement for it (a brand-new/rarely-seen card still needs a sane static baseline).
+function scoreCard(def, opts = {}) {
   const amt = t => (def[t] || []).reduce((s, e) => s + (e.type === 'FISH_HP' ? e.amount : 0), 0);
   const hit = amt('hitEffects'), miss = amt('missEffects'), crit = amt('critEffects');
   const cov = (def.hitZones || []).length, critN = (def.critZones || []).length;
   const mana = def.manaCost ?? 1;
   const plus = [2,4,6,8].every(z => (def.hitZones || []).includes(z));
-  const s = hit * Math.min(cov, 4)
-          + crit * critN * 0.4
-          + (plus ? 6 : 0)
-          + (cov >= 8 ? 4 : 0)
-          + (miss === 0 ? 6 : 0)
-          - Math.abs(miss) * 1.2;
-  return s / Math.max(mana, 0.5); // guard: card 17 is manaCost 0 -- s/0 would be Infinity/NaN
+  // Width/shape bonuses are capped by the card's OWN hit damage rather than flat constants --
+  // found live 2026-09-12: card 9 (2 damage, 8/9 coverage) scored respectably in the draft almost
+  // entirely from these two bonuses (6 + 4 = 10 of its 13.2 total), not from its real damage
+  // output, because the old flat "+6 plus-shape"/"+4 cov>=8" bonuses didn't scale with how little
+  // a hit was actually worth. Capping by `hit` keeps every existing tuned case intact (still
+  // rewards wide/plus cards over narrow weak ones, still ranks the -10-miss and crit-only traps
+  // correctly -- verified against all pre-existing draft tests) while no longer letting a
+  // near-harmless card's score be dominated by shape alone.
+  let s = hit * Math.min(cov, 4)
+        + crit * critN * 0.4
+        + (plus ? Math.min(hit, 6) : 0)
+        + (cov >= 8 ? Math.min(hit, 4) : 0)
+        + (miss === 0 ? 6 : 0)
+        - Math.abs(miss) * 1.2;
+  s = s / Math.max(mana, 0.5); // guard: card 17 is manaCost 0 -- s/0 would be Infinity/NaN
+
+  // Deck complementarity (optional, user request 2026-09-12): a small nudge toward zones the
+  // CURRENT deck covers thinly, without penalizing a duplicate of an already-strong card -- the
+  // static score above still dominates for any real quality gap; this only breaks near-ties.
+  if (opts.zoneDensity) {
+    const zones = def.hitZones || [];
+    if (zones.length) {
+      const avgFill = zones.reduce((sum, z) => sum + 1 / (1 + (opts.zoneDensity[z] || 0)), 0) / zones.length;
+      s += (cfg.draftDeckAwareWeight ?? 0) * avgFill;
+    }
+  }
+
+  // Empirical prior (optional, user request 2026-09-12): this card's REAL average recursive
+  // win-probability value (handEval.val), mined from every logged turn where it was playable --
+  // already board-state- and mana-aware, a genuinely richer signal than any static heuristic. Used
+  // as a 0.5x-1.5x MULTIPLIER (val is bounded [0,1]) rather than replacing the static score, so an
+  // untested new card still gets a sane baseline instead of a hard zero. Only trusted once
+  // cfg.empiricalMinSamples real samples exist (see loadEmpiricalPriors) -- below that it's noise.
+  if (opts.empirical && opts.empirical[def.id] != null) {
+    s *= (0.5 + opts.empirical[def.id]);
+  }
+  return s;
 }
-function rankDraft(offered) {
+function rankDraft(offered, opts = {}) {
   return offered.map((d, i) => ({ i, id: d.id, mana: d.manaCost ?? 1, hit: d.hitZones, crit: d.critZones,
-    plus: [2,4,6,8].every(z => (d.hitZones || []).includes(z)), score: +scoreCard(d).toFixed(2) }))
+    plus: [2,4,6,8].every(z => (d.hitZones || []).includes(z)), score: +scoreCard(d, opts).toFixed(2) }))
     .sort((a, b) => b.score - a.score);
+}
+// How many (deck-instance) cards currently cover each of the 9 board zones -- duplicates count
+// once per copy, since more copies covering a zone means that zone is even more saturated.
+function zoneDensity(fullDeck, defsById) {
+  const density = {};
+  (fullDeck || []).forEach(id => {
+    const def = defsById[id]; if (!def) return;
+    (def.hitZones || []).forEach(z => { density[z] = (density[z] || 0) + 1; });
+  });
+  return density;
+}
+// Scans every logged run for this card's real handEval.val whenever it was a playable hand
+// option -- NOT just the one ultimately played, so this reflects the card's value across every
+// board state it was ever evaluated in, not just cherry-picked wins. Cached at module load (see
+// call site in run()) since re-scanning runs/*.json on every single draft would be wasteful.
+function loadEmpiricalPriors(runsDir) {
+  const stats = {};
+  let files = [];
+  try { files = fs.readdirSync(runsDir).filter(f => f.endsWith('.json')); } catch (e) { return {}; }
+  files.forEach(f => {
+    let run;
+    try { run = JSON.parse(fs.readFileSync(path.join(runsDir, f), 'utf8')); } catch (e) { return; }
+    (run.turns || []).forEach(t => {
+      (t.handEval || []).forEach(h => {
+        if (!h.playable || h.val == null) return;
+        const s = stats[h.cardId] || (stats[h.cardId] = { n: 0, sumVal: 0 });
+        s.n++; s.sumVal += h.val;
+      });
+    });
+  });
+  const priors = {};
+  Object.entries(stats).forEach(([id, s]) => {
+    if (s.n >= (cfg.empiricalMinSamples ?? Infinity)) priors[id] = s.sumVal / s.n;
+  });
+  return priors;
 }
 function findOfferedCards(obj, depth = 0) {
   if (!obj || typeof obj !== 'object' || depth > 6) return null;
@@ -885,8 +1182,8 @@ const updateCards = (run, gs) => (gs.deckCardData || []).forEach(d => {
 // fishBudget: how many MORE fish this call is allowed to play before stopping on a win (defaults
 // to cfg.maxFish for any caller that doesn't pass one). Returns {result, fishPlayed} -- fishPlayed
 // lets run() track a TOTAL across however many separate games it takes to reach the real target,
-// since a loss/daycap can end a game after just one fish ("run N fish" means N total fish across
-// as many games as needed, not "stop at the first loss").
+// since a loss/daycap can end a game after just one fish (see run() below, 2026-09-10 change: "run
+// N fish" now means N total fish across as many games as needed, not "stop at the first loss").
 async function playGame(n, fishBudget) {
   if (fishBudget == null) fishBudget = cfg.maxFish;
   let gs = await fetchState();
@@ -948,7 +1245,13 @@ async function playGame(n, fishBudget) {
 
     if (gs.fishHp <= 0) {
       const offered = (gs.cardsToAdd && gs.cardsToAdd.length) ? gs.cardsToAdd : (findOfferedCards(resp) || []);
-      const ranked = offered.length ? rankDraft(offered) : [];
+      // Deck-aware draft context: zoneDensity needs defs for every card the CURRENT deck holds
+      // (not just the 3 offered), which gs.deckCardData already carries (the same lookup used
+      // everywhere else for chooseAction's defs). Falls back to no adjustment if fullDeck isn't
+      // known yet (mirrors the same "unknown deck" fallback chooseAction already has).
+      const defsById = {}; (gs.deckCardData || []).forEach(d => defsById[d.id] = d);
+      const density = gs.fullDeck ? zoneDensity(gs.fullDeck, defsById) : null;
+      const ranked = offered.length ? rankDraft(offered, { zoneDensity: density, empirical: empiricalPriorsCache }) : [];
       const pick = ranked[0];
       const last = run.turns[run.turns.length - 1];
       // jebaitorTriggered: a skill that can proc on a cast so it doesn't count against the daily
@@ -983,7 +1286,15 @@ async function playGame(n, fishBudget) {
       if (!pick) { run.meta.result = 'win'; log('  stopping (no draft)'); return { result: 'win', fishPlayed: fishNo }; }
       await sleep(cfg.delayMs);
       resp = await action('loot', { cards: [pick.id], nodeId: '', tierId: 0 });
-      if (last) last.draft = { options: ranked.map(r => r.id), picked: pick.id };
+      // Temporary debug hook (2026-09-10, user request): dump the FULL raw loot response so we can
+      // check for any "hard cores" / Awakening-event reward field -- stateOf(resp) below only ever
+      // extracted gameState.data, discarding any other top-level fields the response might carry.
+      // Opt-in via env var so it's a no-op for normal runs; safe to leave in place.
+      if (process.env.DEBUG_LOOT) {
+        fs.mkdirSync(RUNS_DIR, { recursive: true });
+        fs.appendFileSync(path.join(RUNS_DIR, '_debug-loot-raw.jsonl'), JSON.stringify(resp) + '\n');
+      }
+      if (last) last.draft = { options: ranked.map(r => r.id), picked: pick.id, scores: ranked.map(r => ({ id: r.id, score: r.score })) };
       gs = stateOf(resp); updateCards(run, gs);
       if (fishNo >= fishBudget) { run.meta.result = 'win'; log(`  stopping (fish budget ${fishBudget} reached this game) — matches "Leave", no fight left active`); return { result: 'win', fishPlayed: fishNo }; }
       await sleep(cfg.delayMs);
@@ -1012,7 +1323,8 @@ async function playGame(n, fishBudget) {
 
     const defs = {}; (gs.deckCardData || []).forEach(d => defs[d.id] = d);
     const pr = predict(hist, { canAlternate: gs.fishMaxHp >= cfg.alternateMinHp,
-      canThree: gs.fishMaxHp >= cfg.threeMoveMinHp, moveLens, telegraph: gs.nextPosition });
+      canThree: gs.fishMaxHp >= cfg.threeMoveMinHp, moveLens, telegraph: gs.nextPosition,
+      fishMaxHp: gs.fishMaxHp });
     const choice = chooseAction(gs, hist, pr, cfg.enableRedraw);
     const mv = choice.mv;
     const candStr = pr.exact ? `predict [${pr.cand[0].cell}] (${pr.why})` : `${pr.cand.length} cells (${pr.why})`;
@@ -1024,7 +1336,8 @@ async function playGame(n, fishBudget) {
         fishBefore: gs.fishPosition.slice(), bobberFrom: gs.focusPoint.slice(), bobber: gs.focusPoint.slice(), moveCost: 0,
         predicted: pr.cand.map(c => c.cell), predictedExact: pr.exact, why: pr.why, card: null, covered: [], critCells: [],
         result: 'redraw', manaBefore: gs.playerHp, focusBefore: gs.focusMeter, fishHpBefore: gs.fishHp, fishMaxHp: gs.fishMaxHp,
-        drawPool: gs.fullDeck ? drawPool(gs) : undefined, choiceVal: choice.val, playVal: choice.playVal, handEval: choice.handEval };
+        drawPool: gs.fullDeck ? drawPool(gs) : undefined, choiceVal: choice.val, playVal: choice.playVal, handEval: choice.handEval,
+        escalated: choice.escalated, escalationAttempted: choice.escalationAttempted, escalationTimedOut: choice.escalationTimedOut };
       log(`  t${t}: ${candStr} -> REDRAW (discard ${cost}, -${cost} mana)`);
       resp = await action('play_cards', { cards: [], focusPoint: gs.focusPoint });
       { const before = hist[hist.length - 1]; gs = stateOf(resp); hist.push(gs.fishPosition.slice());
@@ -1044,7 +1357,8 @@ async function playGame(n, fishBudget) {
       critCells: coveredCells(def.critZones || [], mv.focus[0], mv.focus[1]),
       moveCost: mv.moveCost, ev: +mv.ev.toFixed(2), pHit: +(mv.pHit || 0).toFixed(2),
       manaBefore: gs.playerHp, focusBefore: gs.focusMeter, fishHpBefore: gs.fishHp, fishMaxHp: gs.fishMaxHp,
-      drawPool: gs.fullDeck ? drawPool(gs) : undefined, choiceVal: mv.val, redrawVal: choice.redrawVal, handEval: choice.handEval };
+      drawPool: gs.fullDeck ? drawPool(gs) : undefined, choiceVal: mv.val, redrawVal: choice.redrawVal, handEval: choice.handEval,
+      escalated: choice.escalated, escalationAttempted: choice.escalationAttempted, escalationTimedOut: choice.escalationTimedOut };
     log(`  t${t}: ${candStr} -> card ${mv.cardId} @bobber[${mv.focus}] (move ${mv.moveCost}f) pHit ${((mv.pHit || 0) * 100).toFixed(0)}%`);
 
     // Big Dual Yield Oil: only spend it the turn a catch looks imminent AND likely (per user
@@ -1084,17 +1398,21 @@ async function playGame(n, fishBudget) {
 const lose = (gs, why) => (log(`  lost: ${why} (${bar(gs)}, mana ${gs.playerHp})`), 'loss');
 
 // onGameDone(run, gameNo): optional, called right after EACH completed game with that game's own
-// run object -- NOT a default side effect of run() itself (test-run.js calls FB.run() directly
-// against a mocked network and must never touch the real filesystem). The CLI entry point below
-// is the only caller that passes exportRun here, so only a real CLI invocation ever writes files.
+// run object -- NOT a side effect of run() itself (test-run.js calls FB.run() directly against a
+// mocked network and must never touch the real filesystem). The CLI entry point below is the only
+// caller that passes exportRun here, so only a real CLI invocation ever writes files.
 //
 // "run N fish" means N fish TOTAL, across however many separate start_run games it takes -- a
-// loss (or daycap, or anything else) ends the CURRENT game, but never the batch itself: don't stop
-// at the first loss, keep going until the real target is met. cfg.maxGames is an optional extra
-// safety cap on the number of games attempted (null/unset = uncapped -- the daily-cap rejection
-// and the fish-total itself are the real backstops); most users never need to set it.
+// loss (or daycap, or anything else) ends the CURRENT game, but never the batch itself (per user
+// 2026-09-10: don't stop at the first loss, keep going until the real target is met, and don't
+// pause to ask about it mid-batch). cfg.maxGames is an optional extra safety cap on the number of
+// games attempted (null/unset = uncapped -- the daily-cap rejection and the fish-total itself are
+// the real backstops); most users never need to set it.
 async function run(onGameDone) {
   stop = false; log('start. Ctrl+C to stop');
+  empiricalPriorsCache = loadEmpiricalPriors(RUNS_DIR);
+  const nPriors = Object.keys(empiricalPriorsCache).length;
+  if (nPriors) log(`  loaded empirical draft priors for ${nPriors} card(s) from past runs`);
   const out = [];
   let remaining = cfg.maxFish, g = 0;
   while (remaining > 0 && !stop) {
@@ -1131,8 +1449,9 @@ async function run(onGameDone) {
     remaining -= outcome.fishPlayed;
     // lastRun (and therefore exportRun(), which just reads it) only ever holds the MOST RECENT
     // playGame() call's data -- with multiple games in one batch every earlier game used to be
-    // silently overwritten and never saved. Calling onGameDone here, once per completed game, is
-    // what actually fixes it -- exporting once after the whole loop can only see the last one.
+    // silently overwritten and never saved (found live 2026-09-10 running a 4-game batch: only the
+    // final game's run JSON ever existed on disk). Calling onGameDone here, once per completed
+    // game, is what actually fixes it -- exporting once after the whole loop can only see the last.
     if (onGameDone) onGameDone(lastRun, g);
     if (outcome.result === 'daycap') { log('  stopping: daily cap reached, no more games possible today'); break; }
     await sleep(cfg.delayMs);
@@ -1189,12 +1508,6 @@ if (require.main === module) {
   }
   const oilFlagGiven = ['useOils', 'oilItemId', 'oilTierId', 'oilPHitThreshold'].some(k => k in args);
   Object.assign(cfg, args);
-  if (!cfg.address) {
-    console.error('[FishBot] No --address given (and cfg.address is unset). Pass your wallet address, e.g.:\n' +
-      '  node fishbot-node.js --maxFish=1 --address=0xYOUR_WALLET\n' +
-      'See README.md for how to find your address and set up token.txt.');
-    process.exit(1);
-  }
   process.on('SIGINT', () => { stop = true; log('stopping...'); });
   promptForOilConfig(oilFlagGiven)
     .then(() => run(exportRun))
@@ -1204,4 +1517,5 @@ if (require.main === module) {
 module.exports = { run, stop: () => { stop = true; }, config: o => Object.assign(cfg, o),
   rankDraft, scoreCard, exportRun, getRun: () => lastRun, cfg,
   _predict: predict, _decide: decide, _shouldRedraw: shouldRedraw, _drawPool: drawPool, _effectAt: effectAt, _reachable: reachable, _reachableWeighted: reachableWeighted, _zoneCell: zoneCell,
-  _chooseAction: chooseAction, _lookaheadValue: lookaheadValue, _bestPositionFor: bestPositionFor, _positionsFor: positionsFor, _evaluateRedraw: evaluateRedraw, _combos: combos, _playValue: playValue };
+  _chooseAction: chooseAction, _lookaheadValue: lookaheadValue, _bestPositionFor: bestPositionFor, _positionsFor: positionsFor, _evaluateRedraw: evaluateRedraw, _combos: combos, _playValue: playValue,
+  _zoneDensity: zoneDensity, _loadEmpiricalPriors: loadEmpiricalPriors, _leafEstimate: leafEstimate };

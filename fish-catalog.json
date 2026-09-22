@@ -1,0 +1,569 @@
+{
+  "262": {
+    "name": "Sardine",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "XS",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 4
+  },
+  "263": {
+    "name": "Clownfish",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 10
+  },
+  "264": {
+    "name": "Trout",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 4
+  },
+  "265": {
+    "name": "Pike",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 4
+  },
+  "266": {
+    "name": "Pale Chub",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "XS",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 10
+  },
+  "267": {
+    "name": "Crucian Carp",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 10
+  },
+  "268": {
+    "name": "Dace",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 4
+  },
+  "269": {
+    "name": "Blue Gill",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 10
+  },
+  "270": {
+    "name": "Black Bass",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 4
+  },
+  "271": {
+    "name": "Blob Fish",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 60
+  },
+  "272": {
+    "name": "Carp",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 4
+  },
+  "273": {
+    "name": "Crab",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 10
+  },
+  "274": {
+    "name": "Salmon",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 10
+  },
+  "275": {
+    "name": "Puffer Fish",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 30
+  },
+  "276": {
+    "name": "Rune Guppy",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "XS",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 30
+  },
+  "277": {
+    "name": "Hexopus",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 30
+  },
+  "278": {
+    "name": "Spell Frog",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 60
+  },
+  "279": {
+    "name": "Dolphyllis",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 60
+  },
+  "280": {
+    "name": "Lick lock",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 60
+  },
+  "281": {
+    "name": "Glub glub",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 30
+  },
+  "282": {
+    "name": "Lil Peep",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 30
+  },
+  "283": {
+    "name": "Blinkle",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 100
+  },
+  "284": {
+    "name": "Hornaldo",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 60
+  },
+  "285": {
+    "name": "Bubble Nib",
+    "rarity": "Relic",
+    "rarityId": 5,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 150
+  },
+  "286": {
+    "name": "Hermix",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 30
+  },
+  "287": {
+    "name": "King Crab",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 60
+  },
+  "288": {
+    "name": "Warden Lamprey",
+    "rarity": "Relic",
+    "rarityId": 5,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 150
+  },
+  "289": {
+    "name": "Octoboo",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 100
+  },
+  "290": {
+    "name": "Battie",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "SM",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 100
+  },
+  "291": {
+    "name": "Skellfin",
+    "rarity": "Relic",
+    "rarityId": 5,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 150
+  },
+  "292": {
+    "name": "Seeker",
+    "rarity": "Giga",
+    "rarityId": 6,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 250
+  },
+  "293": {
+    "name": "Anemone",
+    "rarity": "Giga",
+    "rarityId": 6,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 250
+  },
+  "294": {
+    "name": "Geotle",
+    "rarity": "Giga",
+    "rarityId": 6,
+    "size": "LG",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 250
+  },
+  "295": {
+    "name": "Jaws",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "XL",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 100
+  },
+  "296": {
+    "name": "Blue Whale",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "XXL",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 100
+  },
+  "297": {
+    "name": "Mobius Dickens",
+    "rarity": "Relic",
+    "rarityId": 5,
+    "size": "XXL",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 150
+  },
+  "298": {
+    "name": "Gigapengu",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 10
+  },
+  "334": {
+    "name": "Phingu",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 30
+  },
+  "514": {
+    "name": "Barnaboo",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "SM",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 4
+  },
+  "515": {
+    "name": "Plankton",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "XS",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 4
+  },
+  "516": {
+    "name": "Finley",
+    "rarity": "Common",
+    "rarityId": 0,
+    "size": "SM",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 4
+  },
+  "517": {
+    "name": "Ollie",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "MED",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 10
+  },
+  "518": {
+    "name": "Jelloid",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "MED",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 10
+  },
+  "519": {
+    "name": "Kelpkin",
+    "rarity": "Uncommon",
+    "rarityId": 1,
+    "size": "SM",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 10
+  },
+  "520": {
+    "name": "Skinzy",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "MED",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 30
+  },
+  "521": {
+    "name": "Zombo",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "MED",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 30
+  },
+  "522": {
+    "name": "Deadfin",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "MED",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 30
+  },
+  "523": {
+    "name": "Gulp",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "XS",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 60
+  },
+  "524": {
+    "name": "Podge",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "MED",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 60
+  },
+  "525": {
+    "name": "Globbo",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "LG",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 60
+  },
+  "526": {
+    "name": "Slo_mo",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "MED",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 100
+  },
+  "527": {
+    "name": "Sherrif Bubblesmoke",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "LG",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 100
+  },
+  "528": {
+    "name": "Gideon",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "LG",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 100
+  },
+  "529": {
+    "name": "Starboi",
+    "rarity": "Relic",
+    "rarityId": 5,
+    "size": "LG",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 150
+  },
+  "530": {
+    "name": "Bubba Bass",
+    "rarity": "Relic",
+    "rarityId": 5,
+    "size": "XL",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 150
+  },
+  "531": {
+    "name": "Goober",
+    "rarity": "Relic",
+    "rarityId": 5,
+    "size": "XL",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 150
+  },
+  "532": {
+    "name": "Grotto",
+    "rarity": "Relic",
+    "rarityId": 5,
+    "size": "SM",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 150
+  },
+  "533": {
+    "name": "Nerp",
+    "rarity": "Giga",
+    "rarityId": 6,
+    "size": "XXL",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 250
+  },
+  "534": {
+    "name": "Glimmer",
+    "rarity": "Epic",
+    "rarityId": 3,
+    "size": "SM",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 60
+  },
+  "535": {
+    "name": "Fin Walker",
+    "rarity": "Giga",
+    "rarityId": 6,
+    "size": "XL",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 250
+  },
+  "536": {
+    "name": "Chompus",
+    "rarity": "Legendary",
+    "rarityId": 4,
+    "size": "XXL",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 100
+  },
+  "537": {
+    "name": "Kenny",
+    "rarity": "Giga",
+    "rarityId": 6,
+    "size": "LG",
+    "pondId": 2,
+    "pond": "Dendren Pond",
+    "baseVal": 250
+  },
+  "573": {
+    "name": "Chimpu",
+    "rarity": "Rare",
+    "rarityId": 2,
+    "size": "MED",
+    "pondId": 1,
+    "pond": "Dungeon Pond",
+    "baseVal": 30
+  }
+}

@@ -91,15 +91,46 @@ const topCell = p => p.cand.reduce((a,b)=>b.p>a.p?b:a).cell;
 { const p = FB._predict([[2,2],[2,3]], {canAlternate:true});
   eq('>21hp after 1 move still covers 1+2 (could alternate)', /alternate|1\+2/.test(p.why), true); }
 // ...but "could still alternate" is NOT a flat 50/50 union of dist-1 and dist-2 candidates.
-// The observed move is evidence about which TYPE of mover this fish is -- most canAlt-eligible
-// fish settle into a fixed always-X regime rather than genuinely alternate (measured live: 5 of
-// 6 canAlt fish today locked into always-X after their first move). So after seeing a dist-1
-// move, the dist-1-continuation squares should carry cfg.alternateContinuationPrior (0.75)
-// combined, not be diluted by pooling with the dist-2 "flip" squares as equally likely.
+// The observed move is evidence about which TYPE of mover this fish is. How strong that evidence
+// is depends on the fish's SIZE, which is why this is cfg.moveDistPrior[band].cont and not one
+// flat number: measured 2026-09-13 over 342 casts, the first transition repeated the same
+// distance 230/230 (100%) for <=21hp fish but only 22/42 (52%) at 22-27hp and 38/66 (58%) at
+// >=28hp. A caller passing no fishMaxHp (as here) resolves to the mid band via canAlternate.
 { const p = FB._predict([[2,2],[2,3]], {canAlternate:true});   // one move, distance 1
   const dist1Sqs = new Set([3,8,11]);   // reachable via a single 1-move step from square7=[2,3]
   const p1 = p.cand.filter(c => dist1Sqs.has((c.cell[0]-1)*4+c.cell[1])).reduce((s,c)=>s+c.p,0);
-  eq('favors dist-1 continuation at ~75% combined, not a flat union', Math.abs(p1 - 0.75) < 1e-9, true); }
+  eq('favors dist-1 continuation at the mid band rate (0.55), not a flat union',
+     Math.abs(p1 - FB.cfg.moveDistPrior.mid.cont) < 1e-9, true); }
+// A small fish that has made one move is all but locked: low.cont is 0.97, so the hedge is ~3%,
+// not the 25% a flat 0.75 was spending. (21hp keeps canAlt=true on purpose -- see moveBandLowMaxHp.)
+{ const p = FB._predict([[2,2],[2,3]], {canAlternate:true, fishMaxHp:21});
+  const dist1Sqs = new Set([3,8,11]);
+  const p1 = p.cand.filter(c => dist1Sqs.has((c.cell[0]-1)*4+c.cell[1])).reduce((s,c)=>s+c.p,0);
+  eq('21hp fish after one move is near-locked (0.97 continuation)',
+     Math.abs(p1 - FB.cfg.moveDistPrior.low.cont) < 1e-9, true); }
+// THE turn-0 path-count bug: a 3-step walk has ~5x as many distinct paths as a 1-step one, so a
+// raw union handed d=3 ~59% of the opening belief on every >=28hp fish against a measured 5%.
+// Cells at Manhattan distance exactly 3 are reachable ONLY by a 3-step move (a 1-step move nets
+// 1; a 2-step move nets 0 or 2), so their combined mass is a direct read of the d=3 share.
+{ const p = FB._predict([[2,2]], {canAlternate:true, canThree:true, fishMaxHp:29});
+  const far = p.cand.filter(c => Math.abs(c.cell[0]-2) + Math.abs(c.cell[1]-2) === 3)
+                    .reduce((s,c)=>s+c.p,0);
+  eq('turn-0 on a 3-capable fish caps the d=3 share near its measured 5%, not 59%',
+     far > 0 && far <= FB.cfg.moveDistPrior.high.first[3] + 1e-9, true); }
+// Each distance branch is normalized to its own total before being scaled, so extra paths no
+// longer buy belief: the mid band's turn-0 d=1 cells must carry exactly first[1] combined.
+{ const p = FB._predict([[2,2]], {canAlternate:true, fishMaxHp:24});
+  const d1 = p.cand.filter(c => Math.abs(c.cell[0]-2) + Math.abs(c.cell[1]-2) === 1)
+                   .reduce((s,c)=>s+c.p,0);
+  eq('turn-0 normalizes each distance branch (mid band d=1 carries exactly first[1])',
+     Math.abs(d1 - FB.cfg.moveDistPrior.mid.first[1]) < 1e-9, true); }
+// The low band deliberately keeps the legacy raw path-count union at turn 0 (first:null): a flat
+// prior there gained probability mass but cost 4.6pts of top-1 accuracy. Guard that it is unchanged.
+{ const a = FB._predict([[2,2]], {canAlternate:false, fishMaxHp:16});
+  const d1 = a.cand.filter(c => Math.abs(c.cell[0]-2) + Math.abs(c.cell[1]-2) === 1)
+                   .reduce((s,c)=>s+c.p,0);
+  eq('low band still uses the raw path-count union at turn 0 (d=1 under-weighted at ~29%)',
+     Math.abs(d1 - 4/14) < 1e-9, true); }
 { const p = FB._predict([[2,2],[2,3],[2,1]], {canAlternate:true}); // net1 then net2 -> alternating, next=1
   eq('>21hp alternating -> next dist 1', /alternating -> 1/.test(p.why), true); }
 
@@ -246,6 +277,60 @@ const card28 = { id:28, manaCost:1, hitZones:[1,2,3,4,7],   critZones:[], hitEff
   eq('draft: card 12 (-10 miss) ranks last of the three', ranked[ranked.length-1].id, 12);
   eq('crit-only card (10) scores below a normal damage card (28)', FB.scoreCard(card10) < FB.scoreCard(card28), true); }
 
+// 9b) draft score fix (2026-09-12, real live case): a low-damage wide/plus card (card 9 -- 2
+// damage, 8/9 coverage) used to score respectably almost entirely from flat shape bonuses. Those
+// bonuses are now capped by the card's own hit damage, so card9 should score well below what the
+// old flat-bonus formula gave it, while card8 (real damage, still plus-shaped) is unaffected and
+// still wins the draft -- confirming the fix didn't just move the goalposts on test 8 above.
+{ const oldFormulaScore = 13.2; // hand-computed from the pre-fix flat-bonus formula for card9
+  eq('card9 (low damage, wide) scores below its old flat-bonus value', FB.scoreCard(card9) < oldFormulaScore, true);
+  eq('card8 (real damage, plus-shaped) still beats card9', FB.scoreCard(card8) > FB.scoreCard(card9), true); }
+
+// 9c) zoneDensity: counts how many deck copies cover each zone, duplicates count once per copy.
+// card9's own coverage ([1,2,3,4,6,7,8,9]) happens to fully include card8's zones ([2,4,6,8]), so
+// each card is checked against its own isolated deck to avoid that overlap muddying the count.
+{ const defsById = { 8: card8, 9: card9 };
+  const density8 = FB._zoneDensity([8, 8], defsById);
+  eq('zoneDensity counts both copies of card8', density8[2], 2);
+  eq('zoneDensity counts both copies of card8 (zone 8)', density8[8], 2);
+  const density9 = FB._zoneDensity([9], defsById);
+  eq('zoneDensity counts the single copy of card9', density9[1], 1);
+  eq('zoneDensity: an uncovered zone is undefined/falsy', !density9[5], true); }
+
+// 9d) deck-aware nudge only breaks near-ties -- it must NOT flip a real quality gap, matching the
+// user's explicit call that duplicates of an already-strong card are fine.
+{ const weak = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{type:'FISH_HP',amount:5}], missEffects:[{type:'FISH_HP',amount:-3}], critEffects:[] };
+  // deck already saturated in card8's zones (many copies), zone 5 (weak's exclusive zone) untouched
+  const defsById = { 2: weak, 8: card8 };
+  const density = FB._zoneDensity([8,8,8,8,8,8], defsById);
+  const ranked = FB.rankDraft([card8, weak], { zoneDensity: density });
+  eq('a real quality gap (card8 vs weak) survives the deck-aware nudge even when card8 is fully saturated', ranked[0].id, 8); }
+
+// 9e) empirical prior: a high real-world avgVal boosts a card's draft score, a low one reduces it,
+// relative to the same card with no empirical data at all.
+{ const base = FB.scoreCard(card28);
+  const boosted = FB.scoreCard(card28, { empirical: { 28: 1.0 } });   // 0.5+1.0 = 1.5x
+  const hurt    = FB.scoreCard(card28, { empirical: { 28: 0.0 } });   // 0.5+0.0 = 0.5x
+  eq('empirical prior near 1.0 boosts the score above baseline', boosted > base, true);
+  eq('empirical prior near 0.0 reduces the score below baseline', hurt < base, true);
+  eq('no empirical entry for this id -> baseline unchanged', FB.scoreCard(card28, { empirical: { 999: 1.0 } }), base); }
+
+// 9f) loadEmpiricalPriors: aggregates handEval.val across every run file in a directory, and
+// respects cfg.empiricalMinSamples (a card with too few samples must not appear in the result).
+{ const fs = require('fs'), os = require('os'), path = require('path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-empirical-test-'));
+  const mkTurn = (cardId, val) => ({ handEval: [{ cardId, playable: true, val }] });
+  // card 501: 10 samples, avgVal exactly 0.8 -> should pass the default minSamples(8) threshold
+  fs.writeFileSync(path.join(dir, 'run1.json'), JSON.stringify({ turns: Array.from({length:10}, () => mkTurn(501, 0.8)) }));
+  // card 502: only 3 samples -> should be dropped (below minSamples)
+  fs.writeFileSync(path.join(dir, 'run2.json'), JSON.stringify({ turns: Array.from({length:3}, () => mkTurn(502, 0.9)) }));
+  // a non-playable handEval entry must not count toward any card's samples
+  fs.writeFileSync(path.join(dir, 'run3.json'), JSON.stringify({ turns: [{ handEval: [{ cardId:501, playable:false, val:0.1 }] }] }));
+  const priors = FB._loadEmpiricalPriors(dir);
+  eq('card with >=minSamples real samples gets an averaged prior', +priors[501].toFixed(2), 0.8);
+  eq('card with too few samples is excluded (noise guard)', priors[502], undefined);
+  fs.rmSync(dir, { recursive: true, force: true }); }
+
 // 10) evaluation: never play the crit-only trap when a real hit card is available (crit NOT lethal here)
 { const gs = { hand:[10,2], deckCardData:[card10, {id:2,manaCost:1,hitZones:[4,5,6],critZones:[],hitEffects:[{type:'FISH_HP',amount:5}],missEffects:[{type:'FISH_HP',amount:-3}],critEffects:[]}],
     focusPoint:[2,2], focusMeter:1, playerHp:7, fishHp:25, fishMaxHp:30 };   // catch bar 5, crit(10) not lethal
@@ -334,14 +419,19 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
   // crit (77) and a 33% partial chip (2) that would need a follow-up. With the win-probability
   // model these come out close (a genuine toss-up, not a blowout either way) — assert both are
   // sane probabilities and neither crashes, rather than pinning an exact winner that could
-  // flip on minor position-search tie-breaks.
+  // flip on minor position-search tie-breaks. 2026-09-22: confirmed this specific toss-up DOES
+  // flip type (play -> redraw) after leafEstimate's redraw-tax fix (see cfg.redrawRateEstimate) --
+  // expected at mana=4, an edge case far below the ~12-14 mana range that fix targets, and exactly
+  // the kind of flip this comment already anticipated. Check whichever side won, not which side.
   { const hist = [[2,1],[1,2],[2,3]];
     const pr = FB._predict(hist, {canAlternate:false});
     const gs = { hand:[77,2], playerHp:4, focusMeter:3, focusPoint:[2,2], fishHp:10, fishMaxHp:20,
       deckCardData, fullDeck, discard:[3,5,79,76] };
     const c = FB._chooseAction(gs, hist, pr, true);
-    eq('lookahead t2: returns a play with a bounded [0,1] win probability', c.type==='play' && c.mv.val >= 0 && c.mv.val <= 1, true);
-    eq('lookahead t2: is a close call, not a blowout (within 15pp)', Math.abs(c.mv.val - c.redrawVal) < 1 && c.mv.val > 0.3 && c.mv.val < 0.7, true); }
+    const ownVal = c.type==='play' ? c.mv.val : c.val;
+    const otherVal = c.type==='play' ? c.redrawVal : c.playVal;
+    eq('lookahead t2: returns a bounded [0,1] win probability', ownVal >= 0 && ownVal <= 1, true);
+    eq('lookahead t2: is a close call, not a blowout (within 15pp)', Math.abs(ownVal - otherVal) < 1 && ownVal > 0.2 && ownVal < 0.7, true); }
 
   // bestPositionFor must never favor an outer-ring square over an equally-good central one
   // (user caught this live: card79's plus-shape hit 2/3 candidates from EITHER [1,2] (edge)
@@ -521,4 +611,51 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
   eq('depth-3 escalation: does not fire when the gap is not close', cNotClose.escalated, false);
 
   FB.config({ closeCallGap: 0.01, depth3TimeBudgetMs: 2000 }); // restore defaults for any later use
+}
+
+// ============================================================================================
+// cfg.riskAversionWeight (2026-09-14): a real live decision the recursive search got wrong --
+// confirmed at cast #349 T5 (real fishing run, Barnaboo 28hp, HAND-MINED not synthetic): hand=
+// [80,85,88], mana=5, focus=3, fishHp=8/28, bobber=[2,2] after two real observed dist-2 moves.
+// Card 88 (hitAmt 8, 4 hit zones, the strongest card in this hand, pHit ~50%) lost to card 80
+// (hitAmt 6, 3 hit zones, pHit ~10%) because playing the weak card kept the strong one in hand
+// for a hypothetical future turn -- confirmed by direct branch decomposition of playValue(), not
+// a guess. Mining every real turn's logged handEval found this wasn't a rare fluke: 88 real turns
+// confidently (>0.02 val gap) preferred a card >=15pp worse on pHit, and fish that did this lost
+// far more than fish that didn't, band-for-band (low 79.6% vs 92.0%, mid 70.0% vs 77.8%, high
+// 36.8% vs 94.4% win rate) -- same direction in all three bands. User's diagnosis: the recursive
+// value wasn't pricing the real cost of a low-pHit miss, or the real value of hitting into a
+// stronger position, strongly enough relative to hoarding a card for later.
+{
+  const c80 = { id:80, manaCost:1, hitZones:[1,2,3], critZones:[], hitEffects:[{type:'FISH_HP',amount:6}], missEffects:[{type:'FISH_HP',amount:-3}], critEffects:[] };
+  const c85 = { id:85, manaCost:1, hitZones:[1,4,7], critZones:[], hitEffects:[{type:'FISH_HP',amount:6}], missEffects:[{type:'FISH_HP',amount:-3}], critEffects:[] };
+  const c88 = { id:88, manaCost:1, hitZones:[2,4,6,8], critZones:[], hitEffects:[{type:'FISH_HP',amount:8}], missEffects:[{type:'FISH_HP',amount:-4}], critEffects:[] };
+  const deckCardData = [c80, c85, c88];
+  const hist = [[1,1],[2,2],[1,1],[2,2],[3,3]];   // real recorded positions, turns 0-4
+  const moveLens = [2,2,2,2];                     // real lastMovePath lengths for those moves
+  const hp = 28;
+  const pr = FB._predict(hist, { canAlternate:true, canThree:true, moveLens, fishMaxHp:hp });
+  const gs = { hand:[80,85,88], playerHp:5, focusMeter:3, focusMeterMax:3, focusPoint:[2,2],
+    fishHp:8, fishMaxHp:hp, fishPosition:[3,3],
+    fullDeck:[80,85,88,74,81,84,86,87,89,90], discard:[], deckCardData };   // real recorded drawPool + hand
+  const c = FB._chooseAction(gs, hist, pr, true);
+  eq('riskAversionWeight: cast #349 T5 regression -- picks the reliable card88 (was card80)',
+     c.type === 'play' && c.mv.cardId === 88, true);
+
+  // Scoping check: the value fed to the play-vs-redraw comparison (and logged in handEval) must
+  // stay the TRUE, undiscounted playValue() -- not the risk-adjusted ranking score. Verify by
+  // re-running at weight 0 (pure baseline ranking) and confirming the logged val for whichever
+  // card wins barely moves. A small residual gap is fine (risk-adjusted ranking can pick a
+  // slightly different position deeper in the recursion, which legitimately shifts the true
+  // value a little); a LARGE gap would mean the discount is leaking into the returned number --
+  // exactly the bug an earlier version of this had, which pushed real redraw rate up ~30% and
+  // made mana-efficiency measurably WORSE across every HP band in a live-data replay.
+  const savedWeight = FB.cfg.riskAversionWeight;
+  FB.config({ riskAversionWeight: 0 });
+  const c0 = FB._chooseAction(gs, hist, pr, true);
+  FB.config({ riskAversionWeight: savedWeight });
+  const played = c.handEval.find(h => h.cardId === c.mv.cardId);
+  const playedAtZero = c0.handEval.find(h => h.cardId === c.mv.cardId);
+  eq('riskAversionWeight: logged val stays close to the TRUE value (risk discount does not leak into it)',
+     Math.abs(played.val - playedAtZero.val) < 0.05, true);
 }

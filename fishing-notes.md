@@ -3,29 +3,22 @@
 ## Auth
 - JWT stored in `localStorage.authResponse` -> `.jwt`
 - Send as header: `Authorization: Bearer <jwt>`
-- See README.md for how to get your own token/address — never hardcode or share a real one here.
+- Player wallet: 0x7f9Dc44Ec4EE1E8ccaC4AE04Fd541e4acE0E4942 ; noob docId 81138
 
 ## Endpoints (base https://gigaverse.io)
 - GET  /api/fishing/cards            -> {entities:[80 card defs]}
 - GET  /api/fishing/state/<address>  -> {gameState:{data:{...}}}  (current/last game)
 - POST /api/fishing/action           -> body JSON (below), returns {data:{doc:{data:{...}}, events:[...]}, actionToken}
-- GET  /api/items/balances           -> {entities:[{ID_CID, BALANCE_CID, ...}]}  (full inventory by item id, incl. oils)
 
 ## Action payloads
 start_run:
 {"action":"start_run","actionToken":"<ms-timestamp>","data":{"cards":[],"nodeId":"5","focusPoint":[],"itemId":0,"slotIndex":0,"tierId":1}}
-  - nodeId = pond/node id (string). tierId = difficulty tier. itemId/slotIndex/tierId here have NO
-    effect on oils (see "Fishing oils" section below) — this was a wrong early guess, disproven live.
+  - nodeId = pond/node id (string). tierId = difficulty tier. itemId/slotIndex for bait/consumable.
 play_cards:
 {"action":"play_cards","actionToken":"<ms>","data":{"cards":[0],"nodeId":"","focusPoint":[2,2],"itemId":0,"slotIndex":0,"tierId":0}}
   - cards = array of HAND INDICES to play this turn (mana permitting; multi-card possible)
   - focusPoint = [row,col] 1..4, center of the 3x3 stencil on the 4x4 grid
   - actionToken: echoed from previous response's actionToken (server anti-replay). First one = timestamp.
-use_fishing_item (fishing oils — see "Fishing oils" section below):
-{"action":"use_fishing_item","actionToken":"<ms>","data":{"cards":[],"nodeId":"","focusPoint":[],"itemId":973,"slotIndex":0,"tierId":0}}
-  - itemId = the oil's item id (see catalog below). slotIndex = which of the 3 per-fight consumable
-    slots to fill (0/1/2, must be a currently-unused slot). tierId's effect is unverified — 0 always
-    worked live regardless of the item's actual rarity tier.
 
 ## State fields (gameState.data)
 playerMaxHp(7), playerHp, fishHp, fishMaxHp(e.g 20), fishPosition[r,c], previousFishPosition[r,c],
@@ -51,6 +44,109 @@ lastMovePath[zoneA,zoneB] (0-indexed 4x4 zones), caughtFish{...}, deckCardData[c
 - Since focus is free, ANY predicted target cell can be covered by choosing focus = target - zoneOffset.
   => Game reduces to PREDICTING the fish's next cell (+ managing playerHp; you lose HP over turns).
 
+## SELLING FISH / EXCHANGE RATES (verified 2026-09-14)
+- Fish are a HELD INVENTORY ITEM (`GET /api/items/balances`, keyed by numeric `ID_CID`), not an
+  auto-converted reward. They are sold via the exchange for that pond's resource.
+- `exchangeRates` lives at the **TOP LEVEL** of `GET /api/fishing/state/<address>` -- NOT inside
+  `gameState.data`. Looking for it in gameState returns an empty array and silently reads as
+  "no fish data". Shape: `{id, tier, baseVal, value, pondId}` per species.
+- **`baseVal` is a pure function of RARITY** (exact, all 63 species):
+  Common 4, Uncommon 10, Rare 30, Epic 60, Legendary 100, Relic 150, Giga 250.
+- **`tier` is that day's MARKET RATE for selling a species, not a rarity** (user-confirmed 2026-09-14,
+  then verified against all 63 live species -- 60/60 exact for tiers 1-5, rounding is `floor`):
+      tier 5 -> x1.50   tier 4 -> x1.25   tier 3 -> x1.00   tier 2 -> x0.75   tier 1 -> x0.50
+      tier 0 -> value 0, i.e. NOT SELLABLE that day (seen live on 3 Dungeon Pond species)
+  So `value === floor(baseVal * mult(tier))`. **Do NOT conflate `tier` with the 0-6 rarity scale**
+  -- they disagree on 54 of 62 species (chance level); Barnaboo is tier 5 yet Common/lowest value.
+  An earlier note flagged this as an open question; it is now settled as a NO.
+- **It is RANDOM (or semi-random) per day, NOT a rotation or schedule** (user, 2026-09-14) -- do not
+  describe it as rotating and do not try to predict which day a species will be high; it can only be
+  read from the live `exchangeRates`. It also applies **at the moment of SALE and has nothing to do
+  with when the fish was caught**, so holding a fish costs nothing and carries no decay. The upshot:
+  the same fish swings **3x between its best and worst day** (x1.5 vs x0.5), so never sell into a
+  tier 1-2 day unless you need the resource immediately -- just wait and re-check. `value` is a live
+  figure -- re-pull it rather than caching; only `baseVal`, rarity and pond are stable.
+- Observed distribution on 2026-09-14 (ONE day, so treat as a hypothesis): of 63 species, tiers 1-5
+  held 12/13/11/12/12 and tier 0 held 3. That is suspiciously close to an even 12 per tier, which
+  suggests the game ALLOCATES a fixed number of species to each tier each day (a shuffle) rather
+  than drawing each species independently. If true, roughly 20% of species sit at tier 5 and ~40% at
+  tier 4+ on any given day. Worth confirming by capturing `exchangeRates` on a few more days.
+- Expected multiplier if you sell on an arbitrary day is ~0.96 (slightly BELOW base), because tier 0
+  and the two discount tiers outweigh the two premium ones. Selling blind is therefore a small loss;
+  waiting for tier 4+ is the whole edge, and tier 4+ is ~2.5 days away on average vs ~5.3 for tier 5.
+- **TWO PONDS, tracked separately** (each has its own levelling tree and its own sale resource):
+  `pondId 1` = **Dungeon Pond** (39 species), `pondId 2` = **Dendren Pond** (24 species -- the one
+  this bot fishes). Confirmed two independent ways: each catalog entry's `GUIDE_CID` ("Found in the
+  Dendren Pond") and `pondEntryTiers`, whose entries are literally named `dendrenpond-tier1/2/3`
+  with `pondId: 2`. Always split any inventory valuation by `pondId`; never sum the two.
+- **Species id -> name mapping: `fish-catalog.json`** (in this repo, 63 species with name, rarity,
+  rarityId 0-6, size, pondId and baseVal). There is NO API endpoint for this -- every obvious
+  `/api/items`-style path 404s. It was extracted from the game's own frontend JS bundle, which
+  carries a full item table (`ID_CID`, `NAME_CID`, `RARITY_CID`, `RARITY_NAME`, `TYPE_CID`,
+  `SIZE_CID`, `GUIDE_CID`). Re-extract from the bundle if ids ever change. The bundle's
+  `RARITY_NAME` values are exactly the 7 tier names already used elsewhere in these notes.
+
+## JEBAITOR = A FREE CAST (user-confirmed 2026-09-18)
+- `jebaitorTriggered` (recorded on the CATCH turn of every run JSON, and nowhere else) means **that
+  cast does not count against the daily limit** -- it is a throughput refund, NOT a combat bonus.
+  The field was previously listed here only as an undocumented state field.
+- **Measured rate: 101 of 496 recorded catches = 20.4%.** By mana bar (a rough proxy for
+  account/era): manaMax 11 18.8% (n=170), 12 20.0% (n=25), 13 30.8% (n=39), 14 23.2% (n=224).
+  The manaMax-10 era shows 0/38, i.e. it was not yet active then.
+- **This dwarfs catch-rate tuning.** ~20% of catches being free is worth ~20%+ more fishing per day;
+  the entire mana-vs-fintuition skill question below moves catch rate by about 1pp. When the two
+  compete for the same slot (gear, skill points), throughput should usually win -- daily cores scale
+  with casts, while catch rate only shifts each cast's outcome slightly.
+- **Accounting unit confirmed 2026-09-18 (user)**: `maxPerDay` (10) is the UNJUICED cap --
+  `maxPerDayJuiced` (not `maxPerDay`) is the real limit for a paid/juiced account, and both bot and
+  main accounts are juiced, giving **20 non-jebaitor casts/day**. The daily-cap error's "max runs"
+  wording is misleading -- the unit is per FISH/cast, not per multi-fish run. Confirmed against every
+  day of viewer data: non-jebaitor cast count clusters tightly at 19-23 (mostly 20-21) on every day
+  that actually hit the cap, for both accounts, e.g. main 2026-09-13: 32 total casts - 12 jebaitor =
+  20 non-jebaitor exactly. A jebaitor trigger is a straight 1-for-1 refund against this 20-cast budget.
+- Gear can boost the jebaitor rate; as of 2026-09-17 the main account swapped its fintuition gear for
+  jebaitor gear deliberately, on the reasoning above.
+
+## PULLING SELL VALUE + POND SKILL LEVEL (recipe, 2026-09-15)
+To answer "what's my fish inventory worth" / "what's my pond level and cost to level up", pull
+live data -- do not estimate or reuse cached numbers, everything here changes daily or with catches.
+
+1. **Get the account's real wallet address first.** `cfg.address` in fishbot-node.js defaults to
+   the BOT account's address (`0x7f9Dc44Ec4EE1E8ccaC4AE04Fd541e4acE0E4942`) -- passing that same
+   default for the MAIN account (e.g. via `--address=` on a main-account command) silently pulls
+   the wrong account's fishing *state* (gameplay actions still go to the right account via the JWT,
+   only display/lookup calls using `--address` are affected). The reliable way to get an account's
+   true address: call `GET /api/items/balances` with that account's token -- every returned entity's
+   `PLAYER_CID` is the real address (no `--address` param needed, balances are keyed to the JWT).
+   Main account's real address (confirmed 2026-09-15): `0xbbbfe4cc5c3924f19f6e36e66448b2e3a126b111`
+   (matches the "...b111" suffix already used in run-viewer.html labels).
+2. **Fetch `GET /api/fishing/state/<realAddress>` with that account's token** (raw fetch, NOT
+   `fetchState()` -- that helper only returns `gameState.data` and silently drops everything else
+   used here). Grab the top-level `exchangeRates` (per-species `{id,tier,baseVal,value,pondId}`,
+   `value` already has today's tier multiplier applied) and `pondRates`.
+3. **Per-pond skill level lives in `pondRates`, NOT the top-level `skillLevel` field.** The
+   top-level `skillLevel` is pond 1 (Dungeon) only and will silently under-report Dendren's real
+   level (confirmed live: top-level read 22 while `pondRates.find(p=>p.pondId===2).skillLevel` read
+   76 for the same account at the same instant -- the top-level number is NOT "your fishing level").
+   `pondRates` is an array of `{pondId, skillLevel, qualityWeights, unlockLvlsPerQuality, nodes}`;
+   find the entry with `pondId:2` for Dendren.
+4. **Fetch `GET /api/items/balances` with that account's token** for held fish counts
+   (`{ID_CID, BALANCE_CID}` per species, no address param).
+5. **Compute sell value**: for each held species (cross-ref `fish-catalog.json` by id, keep only
+   `pondId===2` for Dendren), sell value = `exchangeRates[id].value * balance`. This already bakes
+   in today's tier multiplier per species -- do not re-apply `baseVal * mult(tier)` on top of it.
+6. **Level-up cost table is NOT available from any endpoint found so far** -- the user supplies it
+   directly (a per-level cost + cumulative total, e.g. level 71: cost 623, cumulative 623). Treat the
+   live `pondRates` skill level as current and only sum the remaining rows from there (levels can
+   move between the chart being given and being used -- confirmed live: main was captured at level
+   70 in an earlier session, was actually 76 by the time the chart was used the next day; always
+   re-pull `pondRates` before applying a cost table, never assume the level the chart started at
+   still holds).
+7. **Currency assumption, not yet independently confirmed**: sell proceeds and the pond's own
+   leveling-cost table are assumed to be the same resource (Sediment) per the "own sale resource"
+   note above, since fish are sold specifically for that pond's resource. Flag this assumption when
+   reporting a value-vs-cost comparison rather than stating it as settled.
+
 ## FISH MOVEMENT (confirmed with user)
 - Fish moves EVERY turn (never stays). Pattern is fixed but hidden.
 - Distance regime is exactly one of:
@@ -58,13 +154,15 @@ lastMovePath[zoneA,zoneB] (0-indexed 4x4 zones), caughtFish{...}, deckCardData[c
   - always-2: two orthogonal steps, but NEVER back to the square it started this turn (net manhattan 0 excluded; net 2 only).
   - alternating 1-2-1-2 (only ≥21-HP fish — confirmed by user 2026-09-09: 21-HP fish themselves can
     alternate, not just fish strictly above 21; matches `cfg.alternateMinHp: 21` in the code).
-  - **3-step moves (only ≥29-HP fish — confirmed live 2026-09-10, matches `cfg.threeMoveMinHp: 29`):**
-    a fish this size CAN take a 3-orthogonal-step move in one turn. NOT every ≥29hp fish uses this —
-    only 2 of 9 real 29hp encounters showed it at all; the rest were ordinary always-1/always-2/
-    alternating-1-2, identical to smaller fish. The two confirmed 3-capable fish each locked into a
-    clean, perfectly regular alternation once measured correctly: one alternated 1<->3, the other
-    2<->3 — never all three, never a fixed "always-3" (sample size is tiny, 2 real fish; revisit as
-    more are seen). **The real signal is PATH LENGTH (the API's own `lastMovePath.length`), not net
+  - **3-step moves (only ≥28-HP fish — confirmed live 2026-09-10, lowered from 29 to 28 on
+    2026-09-13 after a real 28hp fish showed it, matches `cfg.threeMoveMinHp: 28`):** a fish this
+    size CAN take a 3-orthogonal-step move in one turn. NOT every ≥28hp fish uses this — only 3 of
+    10 real 28-29hp encounters showed it at all; the rest were ordinary always-1/always-2/
+    alternating-1-2, identical to smaller fish. Every confirmed 3-capable fish locked into a clean,
+    perfectly regular alternation once measured correctly: 1<->3 (seen twice) or 2<->3 (seen once)
+    — never all three, never a fixed "always-3" (sample size is still small, 3 real fish; revisit
+    as more are seen, especially whether 27hp or below can ever show it too). **The real signal is
+    PATH LENGTH (the API's own `lastMovePath.length`), not net
     Manhattan displacement between positions** — a 3-step path can double back and land only 1 or 2
     squares from where it started, so reading net displacement alone silently misclassifies some
     3-step moves as 1-step ones. This is a parity fact, not a modeling choice: 3 orthogonal unit
@@ -83,43 +181,177 @@ lastMovePath[zoneA,zoneB] (0-indexed 4x4 zones), caughtFish{...}, deckCardData[c
   regimes, which was wrong for the 2-move case specifically. No direction bias, position/vector
   cycle, or oscillation on top of this weighting — never infer one. Fish max-HP is likewise random
   per fish, no pattern.
+- **How LIKELY each regime is — measured 2026-09-13 over the full 342-cast replay set (1,734 real
+  moves, length always from `lastMovePath.length`).** The rules above say what a fish *can* do; these
+  are the base rates for what it actually does, and they are what `cfg.moveDistPrior` encodes.
+  - **Alternating is a big-fish behaviour, with a hard floor: ≤21hp fish have NEVER been seen to
+    alternate.** Not once, in any logged cast — **0 alternators out of 157 ≤21hp fish with ≥4
+    observed moves** (enough moves to tell), and 0 of all 240 with ≥2; at exactly 21hp it is 0 of
+    31 casts in the replay set (0 of 33 counting segmented run files). **Count FISH, not
+    transitions** — alternation is a fixed per-fish property, so an alternator switches on every
+    transition and a non-alternator on none; quoting the 816 raw transitions inflates the
+    evidence ~3x. 95% upper bound on P(alternating | ≤21hp) is ~1.9% on the fish count, vs the
+    ~0.37% a transition count would wrongly imply. Fish ≥23hp alternate in 44 of 108 casts (41%). Restricted to casts long
+    enough to *observe* it (≥4 moves): ~0% at 14-21hp vs 42-45% at 22-30hp. This does NOT contradict
+    the user's 2026-09-09 confirmation that 21hp fish CAN alternate — see `cfg.moveBandLowMaxHp` — it
+    means the hedge there should be ~3% (an asserted-but-never-observed mechanic), not the 25% a flat
+    0.75 continuation prior was spending.
+  - **First-move distance is close to a coin flip, NOT weighted by path count.** Measured: ≤21hp
+    49%/51% (d1/d2), ≥28hp 50%/45%/5% (d1/d2/d3). This mattered a lot — the old opening prediction
+    summed the candidate sets without normalizing each distance to its own total, so because a
+    3-step walk has ~5x as many distinct paths as a 1-step one, **d=3 was silently collecting
+    59-63% of the opening belief on every ≥28hp fish against a real 5% rate.**
+  - **How strongly a fish sticks to its distance depends on its size.** Share of first transitions
+    that repeated the same distance: ≤21hp **240/240 = 100%** (per fish), 22-27hp 52%, ≥28hp 58%. So small fish
+    lock immediately and completely, while big fish are near a coin flip on each move — one flat
+    continuation prior for all sizes (the old 0.75) is wrong at both ends.
+  - Once locked, a ≤21hp fish stays locked — **absolutely**: no fish has ever been seen to
+    break it (0 of 157 fish with ≥4 moves). Hedging this was tried and rejected; see the `!canAlt` branch.
+  - ⚠️ **DATA-QUALITY TRAP — segment on TURN-level `fishMaxHp`, never `meta.fishMaxHp`.** Some
+    `runs/*.json` files (and 2 of the 342 replay-viewer examples, #7 and #8) concatenate SEVERAL
+    fish into one turn list, with `meta` describing only the FIRST fish. Analysed naively they look
+    like single casts of 20-58 moves that "switch distance" mid-cast — which is really just two
+    different fish's regimes spliced together. This exact artifact produced a bogus "6 lock breaks
+    in 2 casts" finding on 2026-09-13 that was then correctly retracted. Split a turn list wherever
+    the per-turn `fishMaxHp` changes before computing ANY movement statistic.
+- **3-step moves correlate with QUALITY, not just HP** (user's hypothesis, 2026-09-13 — checked and
+  it holds). Of 170 catches with quality recorded, every fish that ever took a 3-step move was
+  **quality 5**: q5 2/2 three-moved, q1-q4 0/40 at the same ≥28hp sizes. Overall only 5 of 66 ≥28hp
+  fish (7.6%) ever three-moved at all. Note 30hp fish showed 0 of 17 — so this is NOT monotonic in
+  HP, which is itself evidence the gate is quality rather than size. Caveat before relying on it:
+  **quality is only known AFTER the catch**, so it can't be conditioned on mid-cast; and quality is
+  nearly collinear with HP anyway (q1 spans 14-21hp, q3 26-30, q4 28-30, q5 28-29), so HP is already
+  most of the signal. The actionable part is the base rate: ~8%, not a coin flip. Alternating fish
+  are likewise roughly q2+ (q1 is 14-21hp, where alternation is ~1%).
 - No on-screen telegraph of the next move.
 - To hit: card resolves on the fish's POST-move square, so predict that square (or cover the candidate set).
 
-## Fishing oils (consumables)
-- 21 real items: 3 rarity tiers (Lil=Uncommon, Mid=Rare, Big=Epic) x 7 effects (Draw, Relaxing, Mana,
-  Fintuition, Crit, Focus, Dual Yield). Item ids (found via the game's own public `_next/static/chunks/*.js`
-  bundles — see "Finding real action names" below): Lil = 818(Draw) 819(Relaxing) 821(Mana) 822(Fintuition)
-  823(Crit) 824(Focus) 973(Dual Yield); Mid = 936-942 in the same order, +962(Dual Yield); Big = 943-949
-  in the same order, +972(Dual Yield).
-- **There is no pre-fight "equip" step for oils, confirmed live.** `GET /api/fishing/state` has no
-  equipped-oil field (only post-use fields: `fintuitionOilBoostPercent`, `dualYieldOilBoostPercent`,
-  `consumablesUsed`, `fishingConsumableSlotUsed[3]`). `start_run`'s response DOES carry a real
-  equipped-loadout array (`data.doc.GEAR_CID_array`), but it's scoped to `TYPE_CID:"Gear"`/`"Skin"`
-  only (rod/ring/lure/cosmetics) — oils are `TYPE_CID:"Consumable"` and never appear in it. **Any oil
-  sitting in account inventory (`GET /api/items/balances`) can be used at any time via `use_fishing_item`,
-  completely independent of any in-game "equip" UI** — that UI is a client-side convenience only.
-- Hard cap: exactly 3 `use_fishing_item` calls per fight, enforced server-side (`fishingConsumableSlotUsed[3]`,
-  `consumablesUsed`). A 4th attempt returns 400 `"Max consumables used this game (3)"`.
-- Confirmed effects: Dual Yield Oil gives a persistent "+N% Dual Yield (this game)" boost (Lil=20%,
-  Mid=40%, confirmed live; Big unverified numerically but same mechanism). Focus Oil gives an immediate
-  "+3 Focus" restore. Draw Oil draws one extra card into hand for free (no mana cost).
+## Bot design
+- Runs IN-BROWSER (console script / userscript) so it reads JWT from localStorage; token never leaves machine.
+- Loop: read state -> predict fish next cell -> pick card(s)+focus to cover it (prefer high dmg, mind mana)
+  -> POST play_cards with echoed actionToken -> repeat until fishHp<=0 (win) or playerHp<=0 (lose) -> start_run next.
+
+## Escalation gap-check used the wrong value scale (fixed 2026-09-19)
+- **Bug**: depth-3 escalation's closeness check (`cfg.closeCallGap`) compared candidates by their
+  risk-adjusted `rank`, not raw `val` -- but the actual final play-vs-redraw decision (`return`
+  statements at the bottom of `chooseAction`) always compares raw `val` (`redrawVal > bestPlay.val`).
+  Redraw's rank is always its raw val (never risk-discounted); a play's rank IS discounted by
+  `riskAdjust` whenever it carries real miss risk. Result: a play with meaningful miss chance could
+  have a real (raw) gap to redraw well under the 0.01 threshold and still never trigger escalation,
+  because the discount inflated the RANK gap past it.
+- **Found via a real live loss** (main account, cast #649, 2026-09-19, a 29hp fish that cascaded to
+  5 misses in a row): turn 4's raw gap was 0.0079 (should escalate), rank gap was 0.047 (didn't).
+  Full manual depth-3 on that exact state found redraw (0.819) clearly beats the depth-2 answer of
+  playing card109 (0.733) -- a real, meaningful miss, not a marginal one.
+- **Fix**: keep sorting `cands` by rank (still needed to pick the CORRECT top-2 -- this is the
+  2026-09-14 fix already documented below, still required), but check closeness using raw `val`.
+  Verified: full regression suite (106/106) unaffected; the exact cast #649 T4 state now triggers
+  escalation where it silently didn't before.
+- **Follow-on problem, fixed same day**: `cfg.depth3TimeBudgetMs` (was 15000ms, user-approved
+  2026-09-10 as a live-turn-latency cap) was too tight for this specific case to actually COMPLETE
+  once escalation correctly triggers -- it needed ~59s uncapped, so in production it triggered,
+  timed out, and silently fell back to the original (still-wrong) depth-2 answer anyway. User
+  explicitly prioritized decision quality over turn latency 2026-09-19 ("more than we have been") --
+  raised to 90000ms. Verified: the exact cast #649 T4 state now resolves end-to-end under production
+  defaults in ~48s, correctly picking redraw (0.819) over the old depth-2 answer of playing (0.733).
+- **New instrumentation (2026-09-19)**: turn snapshots now record `escalated` / `escalationAttempted`
+  / `escalationTimedOut` -- previously NOT persisted anywhere, so there was no way to answer "how
+  often does escalation actually trigger/time out live" from historical data. Query these across
+  future runs before further tuning `depth3TimeBudgetMs` or `closeCallGap`, rather than reasoning
+  from a single example again.
+
+## leafEstimate ignored redraw cost entirely (fixed 2026-09-22)
+- **Bug**: `leafEstimate`'s affordability math (`mana / playsNeeded`) implicitly assumed every future
+  mana point buys a PLAY at `cfg.expectedHitRate`. It had zero model of redraws, even though
+  redraws are a real, roughly-constant ~35% of ALL turns regardless of fish size (measured
+  32.8%-37.2% across HP bands, not meaningfully fish-size-dependent -- 2026-09-22 audit, n=4029
+  real turns pooled across every recorded live game). Since redraw rate is ~constant per turn but
+  bigger fish need more total turns, the absolute mana this omission missed scaled with turns-needed
+  even though the rate didn't -- so the blind spot cost the most on exactly the fish that need the
+  most turns to land.
+- **Investigated after a user-flagged pattern**: a small sample (n=5, the main account's 28-30hp
+  losses on 2026-09-21/22) looked redraw-heavy (36-71% of mana spent on redraws per loss). That
+  did NOT replicate at scale -- across the full 28-30hp dataset (n=208 fights), losses actually had
+  a LOWER redraw rate than same-band wins (27.5% vs 35.3%) and lower mana-fraction-on-redraws
+  (46.7% vs 54.2%). The small sample was noise on that specific axis. What DID hold at scale:
+  winning 28-30hp fights already spend close to the full 14-mana budget in the tail (p95 mana-used
+  == 14, 25.3% of wins use >=12/14) -- this band's mana margin has little real slack even when
+  everything goes right, so ANY unmodeled tax (like the constant-rate redraw tax above) erodes an
+  already-thin buffer. Losses also showed real bad luck on top of that: offered pHit 60.6% vs wins'
+  73.2%, and realized hit rate UNDER their own offered odds by -16.8pp (wins ran +9.3pp OVER their
+  offered odds) -- so losses are a mix of tougher spots and genuinely cold variance, not purely a
+  modeling bug; no code change eliminates that variance (there is no mid-fight flee action).
+- **Fix**: `leafEstimate` now amortizes the redraw tax into an effective mana cost per unit of
+  progress: `effectiveManaCostPerPlay = avgPlayManaCost + (r/(1-r)) * avgRedrawManaCost`, where
+  r = `cfg.redrawRateEstimate` (0.351), `avgRedrawManaCost` (2.377), `avgPlayManaCost` (0.924) are
+  all measured constants (see cfg comment, same n=4029 pooled audit). `totalManaNeeded =
+  playsNeeded * effectiveManaCostPerPlay` replaces the old `playsNeeded` directly in the
+  affordability ratio.
+- **Backtested against real data before shipping** (927 real play-turn snapshots across all 28-30hp
+  fights): the correction is universally more conservative (87 snapshots crossed from affordable
+  >=0.5 to tight <0.5, zero crossed the other way) and NOT a flat shift -- average affordability
+  drop was larger in loss-bound turns (-0.078) than win-bound turns (-0.052), and the 87 newly-
+  flagged risky turns were enriched for real losses (32.2% eventual loss rate vs 24.0% baseline for
+  the band). Full regression suite passes 106/106 (one test's hardcoded play-vs-redraw winner at
+  mana=4 legitimately flipped -- an edge case its own 2026-09-01 comment already called "could flip
+  on minor tie-breaks"; widened to check whichever side won rather than pin one).
+- **Revert path**: `cfg.redrawRateEstimate=0` + `cfg.avgPlayManaCost=1` reproduces the exact
+  pre-fix formula (verified in the backtest script). Since `fishbot-node.js`'s CLI maps any
+  `--flagName=value` straight onto `cfg` (see the CLI entry point), this is revertible with no code
+  change: `node fishbot-node.js --redrawRateEstimate=0 --avgPlayManaCost=1 ...`. A full pre/post
+  file backup also sits in `gigaverse-fishbot-backups/2026-09-22_1014/`.
+- **Not yet live-validated** -- shipped after backtesting against historical data, but no live runs
+  have used it yet as of this writing (main account was at its daily cap when this landed). Watch
+  the next several days of 28-30hp results before treating the backtest signal as confirmed.
+
+## Card-selection risk aversion (user-directed investigation, 2026-09-14)
+- The recursive win-probability search sometimes picked a genuinely weak card (e.g. 10% pHit)
+  over a clearly stronger one in the SAME hand (e.g. 50% pHit), because playing the weak card
+  kept the strong one in hand for a hypothetical future turn. Confirmed in two real casts and, on
+  mining every real turn's logged `handEval`, found on 88 real turns -- fish where this happened
+  lost far more than fish that didn't, in every HP band (low 79.6% vs 92.0% win, mid 70.0% vs
+  77.8%, high 36.8% vs 94.4%), though this is correlational.
+- Fix: `cfg.riskAversionWeight` (0.5) discounts a candidate PLAY's ranking score by its own P(miss)
+  -- but ONLY when choosing which card/position to play, never when deciding whether to play at
+  all. The value that competes against redraw is always the true, undiscounted one. Validated
+  offline against 863 real turns: hit-rate 72.2%->74.8%, and catch-bar progress per mana spent
+  (the metric that actually matters, since mana is the hard constraint) 1.762->1.931 (+9.6%),
+  holding in every band, with play/redraw counts essentially unchanged (not just "redraw more").
+  0.5 came from a weight sweep (0-1.0) that showed a real peak there, not a monotonic trend.
+- Integrating it surfaced a real bug: depth-3 escalation (cfg.closeCallGap) was still selecting and
+  comparing its top-2 candidates by TRUE value, not risk-adjusted -- capable of silently re-picking
+  the pre-fix answer on close calls. Fixed to use the same risk-adjusted ranking throughout. See
+  the cfg.riskAversionWeight comment in fishbot-node.js for full detail.
+- NOT yet validated with a live run -- offline replay only.
 
 ## Pond tiers & rings (user, 2026-09-11)
-- Fishing at Tier 2 or Tier 3 (`tierId` in `start_run`'s payload — see "Action payloads" above; the
-  bot's `cfg.tierId`/`--tierId=` flag, default 1) requires spending a ring: **Silver ring for Tier 2,
-  Gold ring for Tier 3**. In exchange, Tier 2 doubles hard-cores rewards and Tier 3 quadruples them
-  (see "Catch rewards" below). Rings are almost certainly the `TYPE_CID:"Gear"` ring slot already
-  visible in `start_run`'s response (`data.doc.GEAR_CID_array` — see "Fishing oils" above, which notes
-  this array covers rod/ring/lure/cosmetics).
+- Fishing at Tier 2 or Tier 3 (`tierId` in `start_run`'s payload; the bot's `cfg.tierId`/`--tierId=`
+  flag, default 1) requires spending a ring: **Silver ring for Tier 2, Gold ring for Tier 3**. In
+  exchange, Tier 2 doubles hard-cores rewards and Tier 3 quadruples them (see "Catch rewards" below).
 - Which ring type is in stock/available rotates on a daily schedule that isn't documented anywhere the
   user has access to — don't assume a given ring is available on a given day.
 - **Not yet verified live**: whether `start_run` auto-consumes the matching ring from inventory when
   `tierId>1`, what error it returns if the account doesn't own the needed ring, or whether a ring must
-  be equipped via some other action first. Treat a Tier 2/3 request the same way as oils below (a
-  real, limited resource spend) until this is confirmed — watch for a ring-related rejection the same
-  way `"Player has reached max runs for fishing"` (daily cap) and `"Not enough energy"` are already
-  handled as distinct, named error strings.
+  be equipped via some other action first. Treat a Tier 2/3 request as a real, limited resource spend
+  (same caution as oils) until this is confirmed — watch for a ring-related rejection the same way
+  `"Player has reached max runs for fishing"` (daily cap) and `"Not enough energy"` are already handled
+  as distinct, named error strings.
+
+### "Not enough energy" (user-confirmed 2026-09-22)
+- Energy is a **separate resource from the daily cast cap** -- each `start_run` game costs 12 energy,
+  regenerates over time (regen rate not yet measured), and can also be topped up from a ROM (an
+  in-game item NFT the user owns). NOT the same limit as "Player has reached max runs for fishing" --
+  the two can trigger independently, and hitting energy exhaustion does not mean the daily cast cap is
+  also reached (confirmed live 2026-09-22: hit energy-exhaustion after only 22 attempts that day, well
+  under the usual ~19-23-to-cap range, though those ranges may partly overlap -- not enough data yet to
+  say how the two interact).
+- Current bot behavior on this error: treated as fatal (`run()`'s try/catch, see the `catch (e)` block
+  around the main game loop) -- exports whatever was caught so far, then stops the whole batch. It does
+  NOT wait for regen or attempt to use a ROM automatically. Since energy regenerates and ROMs exist,
+  a batch stopped this way may be resumable later (unlike a real daily-cap stop) -- ask the user how
+  they want to handle it (wait and retry, spend a ROM, or leave it) rather than assuming it's done for
+  the day. Spending a ROM is a real limited-resource action -- same caution as oils/tier2-3 rings, never
+  do it without being asked.
 
 ## Catch rewards: rarity, quality, hard cores (user-verified 2026-09-11)
 - Every catch has a `rarity` (0-6) and `quality` (1-5) on its `catchDetails`, tracked separately from
@@ -130,29 +362,11 @@ lastMovePath[zoneA,zoneB] (0-indexed 4x4 zones), caughtFish{...}, deckCardData[c
   user-supplied verified game-data tables, not from bot telemetry, and cross-validated against 3
   independent real reward figures with zero rounding error.
 - **Formula**: `cores = rarityCoresBase[rarity][pondTier] * qualityMultiplier[quality]`.
-  - Rarity base at Tier 1 (doubles per pond tier — Tier2=×2, Tier3=×4, see "Pond tiers & rings" above):
-    Common 80, Uncommon 160, Rare 320, Epic 400, Legendary 480, Relic 560, Giga 640. **Not a single
-    clean progression** — doubles for the first two bumps (Common→Uncommon→Rare) then flattens to a
-    flat +80/tier for the rest. Don't assume it's geometric or arithmetic if extending this table.
+  - Rarity base at Tier 1 (doubles per pond tier — Tier2=×2, Tier3=×4): Common 80, Uncommon 160,
+    Rare 320, Epic 400, Legendary 480, Relic 560, Giga 640. **Not a single clean progression** —
+    doubles for the first two bumps (Common→Uncommon→Rare) then flattens to a flat +80/tier for the
+    rest. Don't assume it's geometric or arithmetic if extending this table.
   - Quality multiplier: q1=1, q2=2, q3=4, q4=5, q5=6. Also not linear/geometric — doubles twice then
     flattens to +1.
-- Implemented in the replay viewer and the (unpublished/local-only) daily-report artifacts as
+- Implemented in run-viewer.html (the Dendren Pond Replay artifact) and the daily-report artifacts as
   `RARITY_CORES_BASE`/`QUALITY_MULT`/`coresFor()`.
-
-## Finding real action names / payloads (method note)
-Browser-context `fetch()`/`XMLHttpRequest` monkey-patching (`window.fetch = ...`) reliably FAILS to
-intercept this app's own network calls, even right after a fresh page reload — its bundled HTTP client
-doesn't reference `window.fetch`/`XHR` in a patchable way, and Service Worker interception is blocked
-too (no way to host a same-origin SW script file without your own deployment). **What actually works:
-download the site's own public `_next/static/chunks/*.js` files directly (plain HTTP GET, no auth, no
-browser needed) and grep them for action-name enums / relevant identifiers.** In an authenticated
-browser tab, `[...document.scripts].map(s=>s.src)` lists the chunk URLs actually in use for the current
-route (the public landing-page chunks alone don't include authenticated-game code) — fetch those with
-plain Node and grep offline. This is how `use_fishing_item`, `flee`, `cancel_run`, `start_run`,
-`play_cards`, `move_focus_point`, `heal_or_damage`, and the full oil-item catalog were all found.
-
-## Bot design
-- Runs as a standalone Node CLI (fishbot-node.js) reading a JWT from a local token file you create
-  yourself; the token never leaves your machine and this project never asks for or logs it.
-- Loop: read state -> predict fish next cell -> pick card(s)+focus to cover it (prefer high dmg, mind mana)
-  -> POST play_cards with echoed actionToken -> repeat until fishHp<=0 (win) or playerHp<=0 (lose) -> start_run next.
