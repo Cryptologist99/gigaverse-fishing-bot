@@ -260,6 +260,29 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
   future runs before further tuning `depth3TimeBudgetMs` or `closeCallGap`, rather than reasoning
   from a single example again.
 
+## Escalation UX: `--maxTurnMs`, and making the pause legible (2026-09-23)
+- Live telemetry (n=608 real play-turns, 2026-09-20/21/22) showed escalation is attempted on
+  ~55-60% of turns, not the rare edge case it was assumed to be -- and ~27% of attempts run out
+  the full `depth3TimeBudgetMs` budget and time out. That means a first-time user could plausibly
+  see a multi-second-to-90s pause on every other turn, with (before this date) zero terminal
+  output explaining why -- indistinguishable from a hang to anyone who hasn't read this file.
+- `--maxTurnMs=N` is a friendlier CLI alias for `cfg.depth3TimeBudgetMs` (any cfg field was already
+  settable via `--fieldName=value`, but that internal name gives no hint what it does). Documented
+  in both READMEs' flag lists.
+- Three log additions (all user-requested, same date) make the tradeoff legible instead of silent:
+  1. A startup message (once, in `run()`) explains what the pause is, that it's normal (not a
+     bug), that `--maxTurnMs` controls it, and what a lower value actually costs.
+  2. A live notice the MOMENT a close call triggers escalation (inside `chooseAction`, before the
+     potentially-long recompute starts) -- was completely silent before this.
+  3. A resolution notice right after -- either "done in Xs, used the deeper check" or "gave up
+     after Xs, used the faster answer instead" -- so a lower `--maxTurnMs`'s actual effect is
+     demonstrated in the moment it happens, not just described in the abstract.
+  4. An end-of-batch summary (in `run()`, before the final `done:` line) tallying attempted/used/
+     timed-out counts across the whole batch, so a user has real numbers from their OWN run to
+     decide whether to change `--maxTurnMs` next time.
+- None of this changes the default (still 90000ms / 90s) or the escalation logic itself -- purely
+  visibility. Full regression suite (106/106) unaffected.
+
 ## leafEstimate ignored redraw cost entirely (fixed 2026-09-22)
 - **Bug**: `leafEstimate`'s affordability math (`mana / playsNeeded`) implicitly assumed every future
   mana point buys a PLAY at `cfg.expectedHitRate`. It had zero model of redraws, even though

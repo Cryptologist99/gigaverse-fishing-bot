@@ -999,7 +999,14 @@ function chooseAction(gs, hist, pr, allowRedraw) {
     if (cands.length >= 2 && (cands[0].val - cands[1].val) < cfg.closeCallGap) {
       escalationAttempted = true;
       const prevDeadline = lookaheadDeadline;
-      lookaheadDeadline = Date.now() + cfg.depth3TimeBudgetMs;
+      const escStart = Date.now();
+      lookaheadDeadline = escStart + cfg.depth3TimeBudgetMs;
+      // Without this, escalation was completely silent from here until the turn's normal log line
+      // prints (which only happens AFTER this whole block returns) -- on a slow escalation that's
+      // up to depth3TimeBudgetMs of dead terminal output, indistinguishable from a hang to anyone
+      // who doesn't already know this mechanism exists. User-requested 2026-09-23: make the pause
+      // legible in the moment, not just after the fact in exported telemetry.
+      log(`  (close call -- double-checking one move deeper, up to ${(cfg.depth3TimeBudgetMs / 1000).toFixed(0)}s; --maxTurnMs=N to change)`);
       try {
         const [a, b] = cands;
         a.val3 = a.kind === 'play'
@@ -1025,12 +1032,17 @@ function chooseAction(gs, hist, pr, allowRedraw) {
         applyEscalated(a);
         applyEscalated(b);
         escalated = true;
+        log(`     (done in ${((Date.now() - escStart) / 1000).toFixed(1)}s -- used the deeper check)`);
       } catch (e) {
         if (!(e instanceof LookaheadBudgetExceeded)) throw e;
         // ran out of time -- abandon the escalation, keep the original depth-2 ranking untouched.
         // escalationTimedOut is the signal that tells us (via the persisted turn snapshot -- see
         // playGame()) how often this actually happens live, which nothing tracked before 2026-09-19.
         escalationTimedOut = true;
+        // This is the concrete, in-the-moment demonstration of what a lower --maxTurnMs actually
+        // costs: not a crash or a worse answer, just falling back to the original (faster, less
+        // certain) 2-ply decision instead of the deeper one.
+        log(`     (gave up after ${((Date.now() - escStart) / 1000).toFixed(1)}s -- used the faster, less certain answer instead)`);
       } finally {
         lookaheadDeadline = prevDeadline;
       }
@@ -1410,10 +1422,35 @@ const lose = (gs, why) => (log(`  lost: ${why} (${bar(gs)}, mana ${gs.playerHp})
 // the real backstops); most users never need to set it.
 async function run(onGameDone) {
   stop = false; log('start. Ctrl+C to stop');
+  // Escalation (the depth-3 close-call recheck) fires on roughly HALF of all turns in practice --
+  // not a rare edge case -- so a first-time user needs this framing before it happens, not just in
+  // documentation they may not have read. User-requested 2026-09-23, after live telemetry showed a
+  // ~55% attempt rate (n=608 turns, 2026-09-20/21/22): explain what the pause is, that it's normal,
+  // that it's controllable, and what controlling it actually trades away.
+  log(`  on a close call (~half of turns), this may pause to double-check its answer one move`);
+  log(`  deeper -- up to ${(cfg.depth3TimeBudgetMs / 1000).toFixed(0)}s by default. Lower with --maxTurnMs=N for faster turns; a lower`);
+  log(`  cap just means it gives up sooner and uses its faster, less certain answer instead --`);
+  log(`  it never crashes or hangs indefinitely either way.`);
   empiricalPriorsCache = loadEmpiricalPriors(RUNS_DIR);
   const nPriors = Object.keys(empiricalPriorsCache).length;
   if (nPriors) log(`  loaded empirical draft priors for ${nPriors} card(s) from past runs`);
   const out = [];
+  // Escalation summary (piece 3 of the same 2026-09-23 UX request): tallied per completed game's
+  // OWN run.turns (a fresh array each game, never shared across games -- see playGame()), guarded
+  // by object identity so a game that produced zero new turns (e.g. an immediate crash) can't get
+  // double-counted against a stale `lastRun` left over from an earlier game.
+  let escTurns = 0, escAttempted = 0, escUsed = 0, escTimedOut = 0, lastTallied = null;
+  const tallyEscalation = r => {
+    if (!r || r === lastTallied || !r.turns) return;
+    lastTallied = r;
+    for (const t of r.turns) {
+      if (t.action === 'redraw') continue;
+      escTurns++;
+      if (t.escalationAttempted) escAttempted++;
+      if (t.escalated) escUsed++;
+      if (t.escalationTimedOut) escTimedOut++;
+    }
+  };
   let remaining = cfg.maxFish, g = 0;
   while (remaining > 0 && !stop) {
     g++;
@@ -1443,10 +1480,12 @@ async function run(onGameDone) {
       // Exporting unconditionally here would re-emit that stale object as if it were new progress,
       // creating a duplicate.
       if (onGameDone && lastRun && lastRun !== lastRunBeforeAttempt) onGameDone(lastRun, g);
+      tallyEscalation(lastRun);
       break;
     }
     out.push(outcome.result);
     remaining -= outcome.fishPlayed;
+    tallyEscalation(lastRun);
     // lastRun (and therefore exportRun(), which just reads it) only ever holds the MOST RECENT
     // playGame() call's data -- with multiple games in one batch every earlier game used to be
     // silently overwritten and never saved (found live 2026-09-10 running a 4-game batch: only the
@@ -1455,6 +1494,13 @@ async function run(onGameDone) {
     if (onGameDone) onGameDone(lastRun, g);
     if (outcome.result === 'daycap') { log('  stopping: daily cap reached, no more games possible today'); break; }
     await sleep(cfg.delayMs);
+  }
+  if (escTurns > 0) {
+    const pct = n => (100 * n / escTurns).toFixed(0);
+    log(`  escalation: attempted on ${escAttempted}/${escTurns} turns (${pct(escAttempted)}%), used the deeper` +
+      ` answer ${escUsed} times, gave up (timed out) ${escTimedOut} times` +
+      (escAttempted ? ` (${(100 * escTimedOut / escAttempted).toFixed(0)}% of attempts)` : '') +
+      ` -- lower --maxTurnMs for faster turns, at the cost of more timeouts like these.`);
   }
   log('done:', out.join(', '));
   return out;
