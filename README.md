@@ -80,6 +80,12 @@ This runs exactly one fish and stops. Useful flags:
   one ply deeper before giving up and using its faster answer instead (default 90000 = 90s). Most
   turns are instant; this only matters on close calls. Lower it for snappier turns at the cost of
   occasionally missing a close-call improvement, or raise it to favor decision quality over speed.
+- `--autoRepairGear=false` — turn off automatic gear repair/restore before each cast (default: on).
+  With it on, equipped gear at 0 durability gets repaired automatically, and Restored (a rarity
+  reroll, not a neutral reset — see `fishing-notes.md`) once repairs are maxed out.
+- `--continueOnBrokenGear=true` — if a needed Restore can't be afforded, the default is to stop the
+  batch cleanly so you can go get materials. Pass this to keep fishing anyway with that item still
+  broken (0 durability) instead of stopping.
 
 Each run writes a JSON log to `runs/run-<timestamp>.json` (created automatically).
 

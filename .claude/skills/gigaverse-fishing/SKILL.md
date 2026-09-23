@@ -63,6 +63,12 @@ this project, not just code or UI text — including your own chat responses whi
 - **Never fabricate or infer a movement/behavior pattern beyond what's documented in
   `fishing-notes.md`.** The fish's movement regime (always-1 / always-2 / alternating) has no further
   pattern within it — no direction bias, no cycle. Don't "discover" one.
+- **Gear auto-repair/restore (`cfg.autoRepairGear`, default ON) spends real materials automatically,
+  unlike oils/tier2-3 rings** — that's intentional, user-directed standing behavior, not something
+  to second-guess. Restore specifically rerolls the item's rarity (a gamble, not a neutral reset).
+  If materials are short for a needed Restore, the batch stops cleanly by default so the user can
+  decide; `--continueOnBrokenGear=true` overrides that. Don't pass that override on the user's
+  behalf without them asking — same rule as every other real-resource-spending flag.
 
 ## Running the bot
 

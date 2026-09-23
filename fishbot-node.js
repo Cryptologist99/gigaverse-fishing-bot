@@ -40,11 +40,16 @@ const cfg = {
                     // set. The user creates this file themselves (paste the JWT into it directly,
                     // same as token.txt) -- never pass a JWT value on the command line or in chat.
   nodeId:   '5', tierId: 1, itemId: 0, slotIndex: 0,
-  // Auto-repair equipped gear at 0 durability before the next cast (see checkAndRepairGear).
-  // Defaults ON, unlike oils/tier2-3 rings -- user explicitly directed this as standing behavior
-  // 2026-09-23 ("check before every cast"), not an opt-in-per-run action. Never auto-Restores
-  // (rerolls rarity, a real gamble) -- only warns when an item is maxed on repairs.
+  // Auto-repair (and auto-Restore, once repairs are maxed) equipped gear at 0 durability before
+  // the next cast -- see checkAndRepairGear. Defaults ON, unlike oils/tier2-3 rings -- user
+  // explicitly directed this as standing behavior 2026-09-23 ("check before every cast"), not an
+  // opt-in-per-run action.
   autoRepairGear: true,
+  // If a needed Restore can't be afforded (see computeMaterialShortfall), the default is to STOP
+  // the whole batch cleanly (throws, same fatal-error path as "Not enough energy") so the user can
+  // decide -- user-directed 2026-09-23. Set this true to instead just warn and keep fishing with
+  // that item still at 0 durability, un-restored -- an explicit opt-in for "I know, let it ride."
+  continueOnBrokenGear: false,
   // Fishing oils: confirmed live 2026-09-10 that oils have NO pre-fight "equip" step at all --
   // the real action is `use_fishing_item` (data: {itemId, slotIndex, tierId}), which spends
   // directly from account inventory (GET /api/items/balances) any time mid-fight, capped at 3
@@ -474,7 +479,9 @@ async function checkAndRepairGear() {
     const shortfall = computeMaterialShortfall(item.resetInputs, item.resetAmounts, balances);
     if (shortfall.length) {
       const desc = shortfall.map(s => `${MATERIAL_NAMES[s.id] || ('item ' + s.id)} (need ${s.need}, have ${s.have})`).join(', ');
-      throw new Error(`gear: ${item.name} is at 0 durability with repairs maxed (${item.usedRepairs}/${item.maxRepairs}) and needs Restore, but materials are short: ${desc} -- stopping so you can decide how to proceed`);
+      const msg = `gear: ${item.name} is at 0 durability with repairs maxed (${item.usedRepairs}/${item.maxRepairs}) and needs Restore, but materials are short: ${desc}`;
+      if (cfg.continueOnBrokenGear) { warn(`  ${msg} -- continuing anyway with it broken (--continueOnBrokenGear=true)`); continue; }
+      throw new Error(`${msg} -- stopping so you can decide how to proceed (pass --continueOnBrokenGear=true to fish through this instead)`);
     }
     await restoreGear(item.docId);
     log(`  gear: RESTORED ${item.name} (was 0 durability, repairs maxed at ${item.maxRepairs}) -- rarity may have changed, Restore rerolls it`);

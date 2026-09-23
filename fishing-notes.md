@@ -312,6 +312,11 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
     "Not enough energy" etc. -- stops the batch cleanly, exports whatever was caught so far, and
     names exactly which materials are short and by how much. User-directed: stop and let the user
     decide rather than silently skip or guess.
+  - **`cfg.continueOnBrokenGear` (default false, `--continueOnBrokenGear=true`) overrides the stop**
+    -- an explicit opt-in for "I know materials are short, keep fishing with that item still at 0
+    durability anyway." Same-day follow-up to the stop-by-default behavior above: the user wants
+    the safety stop by default, but also a way to override it when they've already decided to fish
+    through it. Only affects the insufficient-materials case -- repair/restore itself is unchanged.
   - The pure decision parts (`decideGearActions`, `computeMaterialShortfall`) are unit-tested
     offline in `test.js`.
 
