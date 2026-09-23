@@ -348,8 +348,9 @@ async function action(type, data, _retried) {
 // Item balances live outside the fishing namespace entirely (GET /api/items/balances) -- same
 // Bearer-token auth as everything else, confirmed live 2026-09-10. Browser-context fetch()
 // without the real JWT header returns {"error":"No user provided"} even with cookies, so this
-// only works via the bot's own token, same as fetchState()/action().
-async function fetchOilBalance(itemId) {
+// only works via the bot's own token, same as fetchState()/action(). Generic (any itemId), not
+// oil-specific despite the original name -- reused for gear-restore material checks below.
+async function fetchItemBalance(itemId) {
   const res = await fetch('https://gigaverse.io/api/items/balances', { headers: { 'Authorization': 'Bearer ' + jwt() } });
   const j = await res.json().catch(() => ({}));
   const e = (j.entities || []).find(x => String(x.ID_CID) === String(itemId));
@@ -357,7 +358,7 @@ async function fetchOilBalance(itemId) {
 }
 
 // --- gear durability (2026-09-23, user-directed) --------------------------------------------
-// Also outside the fishing namespace, same Bearer-token auth pattern as fetchOilBalance.
+// Also outside the fishing namespace, same Bearer-token auth pattern as fetchItemBalance.
 // gear/items is the static catalog (name, rarity, REPAIR_COUNT_CID = max repairs allowed before
 // a reset/Restore is required -- confirmed 5 for Head/Body armor, 3 for Ring/Rod/Lure, NOT a flat
 // 3 for everything). gear/instances is the account's actual owned gear, keyed by docId, with
@@ -376,15 +377,10 @@ async function fetchGearInstances() {
   const j = await res.json().catch(() => ({}));
   return j.entities || [];
 }
-// POST /api/gear/repair -- discovered live 2026-09-23 via browser network capture + trial payloads.
-// The request needs gearInstanceId (the exact docId) -- an empty body 500s with "Gear instance not
-// found" (confirmed), so this is NOT an "operate on whatever's equipped" endpoint; it targets one
-// specific instance. Restore (POST /api/gear/repair -> /api/gear/restore, same gearInstanceId
-// shape, confirmed via the same capture) is NOT wired in here on purpose -- user-directed 2026-09-23:
-// Restore rerolls the item's rarity (can go up, down, or stay the same, confirmed live: a Rare Twin
-// Lure rolled down to Common), so it's a real gamble on top of spending Gear Ember, not a neutral
-// reset. That stays a manual, deliberate action; this code only ever repairs, and warns instead of
-// restoring when repairs are maxed out.
+// POST /api/gear/repair and /api/gear/restore -- discovered live 2026-09-23 via browser network
+// capture + trial payloads. Both need gearInstanceId (the exact docId) -- an empty body 500s with
+// "Gear instance not found" (confirmed), so this is NOT an "operate on whatever's equipped"
+// endpoint; it targets one specific instance.
 async function repairGear(gearInstanceId) {
   const res = await fetch('https://gigaverse.io/api/gear/repair', {
     method: 'POST',
@@ -395,9 +391,31 @@ async function repairGear(gearInstanceId) {
   if (!res.ok) throw new Error('repair failed ' + res.status + ' ' + (j.message || JSON.stringify(j)));
   return j;
 }
+// Restore rerolls the item's rarity (can go up, down, or stay the same, confirmed live: a Rare
+// Twin Lure rolled down to Common) -- a real gamble on top of spending Gear Ember, not a neutral
+// reset. User-directed 2026-09-23: auto-restore IS wanted once repairs are maxed (unlike the
+// earlier, more cautious "warn only" version of this code), but ONLY when the required materials
+// are actually in stock -- see checkAndRepairGear's material check below, which throws (stopping
+// the batch cleanly) rather than silently skipping when they're not.
+async function restoreGear(gearInstanceId) {
+  const res = await fetch('https://gigaverse.io/api/gear/restore', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + jwt(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ gearInstanceId })
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error('restore failed ' + res.status + ' ' + (j.message || JSON.stringify(j)));
+  return j;
+}
+// Material id -> display name, extracted from the game's own frontend catalog (no live endpoint
+// exposes this -- same technique as fish-catalog.json, see fishing-notes.md). Only for readable
+// log/error text; never used for any decision logic.
+const MATERIAL_NAMES = { 7: 'Ethereal Thread', 21: 'Wood', 22: 'Fiber', 23: 'Bone', 133: 'Transfuser', 200: 'Glass Orb', 250: 'Gear Ember' };
 // Pure decision logic (no network) so this is unit-testable offline -- see test.js. Only equipped
 // items at EXACTLY 0 durability are actionable; anything above 0 is left alone regardless of how
 // low it is, matching the user's explicit rule (repair/restore only triggers at 0, never earlier).
+// needsRestore carries the Restore material cost (resetInputs/resetAmounts) so the caller can check
+// affordability before spending anything.
 function decideGearActions(instances, catalog) {
   const catalogById = {}; (catalog || []).forEach(c => catalogById[c.GAME_ITEM_ID_CID] = c);
   const toRepair = [], needsRestore = [];
@@ -408,15 +426,34 @@ function decideGearActions(instances, catalog) {
     const maxRepairs = cat ? cat.REPAIR_COUNT_CID : null;
     const usedRepairs = inst.REPAIR_COUNT_CID || 0;
     const name = cat ? cat.NAME_CID : ('item ' + inst.GAME_ITEM_ID_CID);
-    if (maxRepairs != null && usedRepairs >= maxRepairs) needsRestore.push({ docId: inst.docId, name, usedRepairs, maxRepairs });
-    else toRepair.push({ docId: inst.docId, name, usedRepairs, maxRepairs });
+    if (maxRepairs != null && usedRepairs >= maxRepairs) {
+      const rc = (cat && cat.repairCost) || {};
+      needsRestore.push({ docId: inst.docId, name, usedRepairs, maxRepairs,
+        resetInputs: rc.RESET_INPUT_ID_CID_array || [], resetAmounts: rc.RESET_INPUT_AMOUNT_CID_array || [] });
+    } else toRepair.push({ docId: inst.docId, name, usedRepairs, maxRepairs });
   }
   return { toRepair, needsRestore };
 }
+// Pure too (no network) -- given the materials a Restore needs (parallel id/amount arrays) and
+// the account's current balance for each (same order), returns which ones fall short. Empty
+// result means affordable. Separated out from checkAndRepairGear so this comparison itself is
+// unit-testable -- see test.js.
+function computeMaterialShortfall(resetInputs, resetAmounts, balances) {
+  return resetInputs
+    .map((id, i) => ({ id, need: resetAmounts[i], have: balances[i] }))
+    .filter(x => x.have < x.need);
+}
 // Called right before every start_run (both the very first fish of a game and each subsequent
-// fish in the same chain -- see playGame()) so a durability hit mid-batch gets repaired before the
-// NEXT cast, not just at the top of a batch. cfg.autoRepairGear defaults on since the user directed
-// this as standing behavior, not an opt-in-per-run action like oils/tier2-3 rings.
+// fish in the same chain -- see playGame()) so a durability hit mid-batch gets repaired/restored
+// before the NEXT cast, not just at the top of a batch. cfg.autoRepairGear defaults on since the
+// user directed this as standing behavior, not an opt-in-per-run action like oils/tier2-3 rings.
+//
+// Repair failures are non-fatal (warn and move on -- the same item just gets re-checked next
+// cast). Restore is different: if the required materials aren't in stock, this THROWS instead of
+// silently skipping, which propagates up through playGame()/run()'s existing fatal-error handling
+// (same path as "Not enough energy" etc.) -- stops the batch cleanly, exports whatever was caught
+// so far, and surfaces a clear reason. User-directed 2026-09-23: "stop and ask" rather than either
+// continuing to fish with broken gear or guessing what to do about missing materials.
 async function checkAndRepairGear() {
   if (!cfg.autoRepairGear) return;
   let instances, catalog;
@@ -424,9 +461,6 @@ async function checkAndRepairGear() {
     [instances, catalog] = await Promise.all([fetchGearInstances(), fetchGearItemsCatalog()]);
   } catch (e) { warn('  gear check failed:', e.message); return; }
   const { toRepair, needsRestore } = decideGearActions(instances, catalog);
-  for (const item of needsRestore) {
-    warn(`  gear: ${item.name} is at 0 durability with repairs maxed (${item.usedRepairs}/${item.maxRepairs}) -- needs a manual Restore, NOT auto-restoring`);
-  }
   for (const item of toRepair) {
     try {
       await repairGear(item.docId);
@@ -434,6 +468,16 @@ async function checkAndRepairGear() {
     } catch (e) {
       warn(`  gear: repair failed for ${item.name}:`, e.message);
     }
+  }
+  for (const item of needsRestore) {
+    const balances = await Promise.all(item.resetInputs.map(id => fetchItemBalance(id)));
+    const shortfall = computeMaterialShortfall(item.resetInputs, item.resetAmounts, balances);
+    if (shortfall.length) {
+      const desc = shortfall.map(s => `${MATERIAL_NAMES[s.id] || ('item ' + s.id)} (need ${s.need}, have ${s.have})`).join(', ');
+      throw new Error(`gear: ${item.name} is at 0 durability with repairs maxed (${item.usedRepairs}/${item.maxRepairs}) and needs Restore, but materials are short: ${desc} -- stopping so you can decide how to proceed`);
+    }
+    await restoreGear(item.docId);
+    log(`  gear: RESTORED ${item.name} (was 0 durability, repairs maxed at ${item.maxRepairs}) -- rarity may have changed, Restore rerolls it`);
   }
 }
 async function fetchState() {
@@ -1336,7 +1380,7 @@ async function playGame(n, fishBudget) {
                         canAlt: gs.fishMaxHp >= cfg.alternateMinHp,
                         canThree: gs.fishMaxHp >= cfg.threeMoveMinHp }, gridSize: G, cards: {}, turns: [] };
   updateCards(run, gs); lastRun = run;
-  let oilBalance = cfg.useOils ? await fetchOilBalance(cfg.oilItemId) : 0;
+  let oilBalance = cfg.useOils ? await fetchItemBalance(cfg.oilItemId) : 0;
   // moveLens: REAL step count per turn (gs.lastMovePath.length), parallel to hist -- needed so
   // predict() can correctly classify a 3-capable fish's regime from true step count rather than
   // net position delta (see predict()'s own comment; net delta alone can't tell a 3-step move
@@ -1665,4 +1709,5 @@ module.exports = { run, stop: () => { stop = true; }, config: o => Object.assign
   _predict: predict, _decide: decide, _shouldRedraw: shouldRedraw, _drawPool: drawPool, _effectAt: effectAt, _reachable: reachable, _reachableWeighted: reachableWeighted, _zoneCell: zoneCell,
   _chooseAction: chooseAction, _lookaheadValue: lookaheadValue, _bestPositionFor: bestPositionFor, _positionsFor: positionsFor, _evaluateRedraw: evaluateRedraw, _combos: combos, _playValue: playValue,
   _zoneDensity: zoneDensity, _loadEmpiricalPriors: loadEmpiricalPriors, _leafEstimate: leafEstimate,
-  _decideGearActions: decideGearActions, _checkAndRepairGear: checkAndRepairGear };
+  _decideGearActions: decideGearActions, _checkAndRepairGear: checkAndRepairGear,
+  _computeMaterialShortfall: computeMaterialShortfall };

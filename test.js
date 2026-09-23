@@ -667,8 +667,10 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
 // on the account's instance), and only EXACTLY 0 durability is actionable.
 {
   const catalog = [
-    { GAME_ITEM_ID_CID: 924, NAME_CID: "Puppeteer's Rod [GEAR]", REPAIR_COUNT_CID: 3 }, // rod, max 3
-    { GAME_ITEM_ID_CID: 634, NAME_CID: 'Malafungus Head [GEAR]', REPAIR_COUNT_CID: 5 }, // head, max 5
+    { GAME_ITEM_ID_CID: 924, NAME_CID: "Puppeteer's Rod [GEAR]", REPAIR_COUNT_CID: 3, // rod, max 3
+      repairCost: { RESET_INPUT_ID_CID_array: [250], RESET_INPUT_AMOUNT_CID_array: [5] } },
+    { GAME_ITEM_ID_CID: 634, NAME_CID: 'Malafungus Head [GEAR]', REPAIR_COUNT_CID: 5, // head, max 5
+      repairCost: { RESET_INPUT_ID_CID_array: [250], RESET_INPUT_AMOUNT_CID_array: [5] } },
   ];
   const notEquipped = { docId: 'A', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 0, REPAIR_COUNT_CID: 1, EQUIPPED_TO_SLOT_CID: -1 };
   const aboveZero   = { docId: 'B', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 5, REPAIR_COUNT_CID: 1, EQUIPPED_TO_SLOT_CID: 14 };
@@ -688,7 +690,10 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
 
   { const { toRepair, needsRestore } = FB._decideGearActions([maxedRepairs], catalog);
     eq('decideGearActions: an equipped item at 0 durability with repairs MAXED -> needsRestore, not toRepair', needsRestore.length, 1);
-    eq('decideGearActions: ...never auto-added to toRepair when maxed', toRepair.length, 0); }
+    eq('decideGearActions: ...never auto-added to toRepair when maxed', toRepair.length, 0);
+    eq('decideGearActions: needsRestore carries the Restore material cost from the catalog',
+       needsRestore[0] && needsRestore[0].resetInputs, [250]);
+    eq('decideGearActions: ...and the amount needed', needsRestore[0] && needsRestore[0].resetAmounts, [5]); }
 
   { const { toRepair, needsRestore } = FB._decideGearActions(
       [notEquipped, aboveZero, repairable, maxedRepairs], catalog);
@@ -696,4 +701,26 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
        toRepair.map(x => x.docId), ['C']);
     eq('decideGearActions: mixed real-shaped list -- exactly the one maxed item goes to needsRestore',
        needsRestore.map(x => x.docId), ['D']); }
+}
+
+// ============================================================================================
+// computeMaterialShortfall (2026-09-23): pure comparison used to decide whether an auto-Restore
+// can actually proceed. User-directed: if materials are short, checkAndRepairGear THROWS (stops
+// the batch cleanly) rather than silently skipping -- this is the logic that decision is based on.
+{
+  eq('computeMaterialShortfall: enough of everything -> no shortfall',
+     FB._computeMaterialShortfall([250], [5], [31]), []);
+
+  eq('computeMaterialShortfall: exactly enough -> no shortfall (not a strict >)',
+     FB._computeMaterialShortfall([250], [5], [5]), []);
+
+  eq('computeMaterialShortfall: one short -> reports that material with need/have',
+     FB._computeMaterialShortfall([250], [5], [2]), [{ id: 250, need: 5, have: 2 }]);
+
+  eq('computeMaterialShortfall: multi-material recipe -- only the short ones are reported',
+     FB._computeMaterialShortfall([23, 22], [5, 5], [100, 0]), [{ id: 22, need: 5, have: 0 }]);
+
+  eq('computeMaterialShortfall: multi-material recipe -- both short if both are short',
+     FB._computeMaterialShortfall([23, 22], [5, 5], [0, 0]),
+     [{ id: 23, need: 5, have: 0 }, { id: 22, need: 5, have: 0 }]);
 }

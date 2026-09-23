@@ -297,14 +297,23 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
   are maxed out. **Restore REROLLS the item's rarity** (confirmed live: a Rare Twin Lure rolled
   down to Common) -- it is not a neutral reset, it's a gamble on top of spending Gear Ember. Resets
   `REPAIR_COUNT_CID` to 0 and sets durability to the new rarity's max.
-- **Auto-repair is wired into the bot** (`cfg.autoRepairGear`, default ON -- user-directed
-  2026-09-23 as standing behavior, unlike oils/tier2-3 rings which stay opt-in-per-run):
-  `checkAndRepairGear()` runs before EVERY `start_run` call in `playGame()` (both the first fish of
-  a game and every subsequent fish in the same chain -- not just once per batch), so a durability
-  hit mid-batch gets repaired before the next cast, not just at the top. It repairs any equipped
-  item at exactly 0 durability with repairs remaining; if repairs are maxed, it only WARNS (never
-  auto-restores -- that stays a manual, deliberate action given the rarity-reroll gamble above).
-  The pure decision part (`decideGearActions`) is unit-tested offline in `test.js`.
+- **Auto-repair AND auto-restore are wired into the bot** (`cfg.autoRepairGear`, default ON --
+  user-directed 2026-09-23 as standing behavior, unlike oils/tier2-3 rings which stay
+  opt-in-per-run): `checkAndRepairGear()` runs before EVERY `start_run` call in `playGame()` (both
+  the first fish of a game and every subsequent fish in the same chain -- not just once per batch),
+  so a durability hit mid-batch gets fixed before the next cast, not just at the top.
+  - At 0 durability with repairs remaining -> repairs automatically.
+  - At 0 durability with repairs maxed -> **restores automatically too** (revised same day -- an
+    earlier version of this only warned and required a manual Restore; the user then explicitly
+    asked for auto-restore as well, given the rarity-reroll gamble is an accepted cost, not a
+    reason to hold off).
+  - **But only if the Restore materials are actually in stock.** If short, `checkAndRepairGear`
+    THROWS (via `computeMaterialShortfall`), which propagates through the same fatal-error path as
+    "Not enough energy" etc. -- stops the batch cleanly, exports whatever was caught so far, and
+    names exactly which materials are short and by how much. User-directed: stop and let the user
+    decide rather than silently skip or guess.
+  - The pure decision parts (`decideGearActions`, `computeMaterialShortfall`) are unit-tested
+    offline in `test.js`.
 
 ## Escalation UX: `--maxTurnMs`, and making the pause legible (2026-09-23)
 - Live telemetry (n=608 real play-turns, 2026-09-20/21/22) showed escalation is attempted on
