@@ -37,6 +37,13 @@ global.fetch = async (url, init) => {
   if (typeof url === 'string' && url.includes('/api/items/balances')) {
     return { ok: true, status: 200, json: async () => ({ entities: [{ ID_CID: '972', BALANCE_CID: 3 }] }), clone() { return this; }, text: async () => '' };
   }
+  // gear/instances + gear/items: same "outside the action-token sequence" reasoning as
+  // items/balances above -- checkAndRepairGear() calls these before every start_run. Empty
+  // entities means decideGearActions() finds nothing equipped/at-0, so this is a clean no-op for
+  // every existing test (none of them assert anything about gear).
+  if (typeof url === 'string' && (url.includes('/api/gear/instances/') || url.includes('/api/gear/items'))) {
+    return { ok: true, status: 200, json: async () => ({ entities: [] }), clone() { return this; }, text: async () => '' };
+  }
   if (init && init.method === 'POST') {
     const body = JSON.parse(init.body); sent.push(body);
     const a = body.action, d = body.data;

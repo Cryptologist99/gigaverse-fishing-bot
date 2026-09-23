@@ -40,6 +40,11 @@ const cfg = {
                     // set. The user creates this file themselves (paste the JWT into it directly,
                     // same as token.txt) -- never pass a JWT value on the command line or in chat.
   nodeId:   '5', tierId: 1, itemId: 0, slotIndex: 0,
+  // Auto-repair equipped gear at 0 durability before the next cast (see checkAndRepairGear).
+  // Defaults ON, unlike oils/tier2-3 rings -- user explicitly directed this as standing behavior
+  // 2026-09-23 ("check before every cast"), not an opt-in-per-run action. Never auto-Restores
+  // (rerolls rarity, a real gamble) -- only warns when an item is maxed on repairs.
+  autoRepairGear: true,
   // Fishing oils: confirmed live 2026-09-10 that oils have NO pre-fight "equip" step at all --
   // the real action is `use_fishing_item` (data: {itemId, slotIndex, tierId}), which spends
   // directly from account inventory (GET /api/items/balances) any time mid-fight, capped at 3
@@ -349,6 +354,87 @@ async function fetchOilBalance(itemId) {
   const j = await res.json().catch(() => ({}));
   const e = (j.entities || []).find(x => String(x.ID_CID) === String(itemId));
   return e ? e.BALANCE_CID : 0;
+}
+
+// --- gear durability (2026-09-23, user-directed) --------------------------------------------
+// Also outside the fishing namespace, same Bearer-token auth pattern as fetchOilBalance.
+// gear/items is the static catalog (name, rarity, REPAIR_COUNT_CID = max repairs allowed before
+// a reset/Restore is required -- confirmed 5 for Head/Body armor, 3 for Ring/Rod/Lure, NOT a flat
+// 3 for everything). gear/instances is the account's actual owned gear, keyed by docId, with
+// DURABILITY_CID (current) and REPAIR_COUNT_CID (repairs already used on THIS instance -- same
+// field name as the catalog's max, different meaning, don't confuse the two).
+let gearItemsCatalogCache = null;
+async function fetchGearItemsCatalog() {
+  if (gearItemsCatalogCache) return gearItemsCatalogCache;
+  const res = await fetch('https://gigaverse.io/api/gear/items', { headers: { 'Authorization': 'Bearer ' + jwt() } });
+  const j = await res.json().catch(() => ({}));
+  gearItemsCatalogCache = j.entities || j || [];
+  return gearItemsCatalogCache;
+}
+async function fetchGearInstances() {
+  const res = await fetch('https://gigaverse.io/api/gear/instances/' + cfg.address, { headers: { 'Authorization': 'Bearer ' + jwt() } });
+  const j = await res.json().catch(() => ({}));
+  return j.entities || [];
+}
+// POST /api/gear/repair -- discovered live 2026-09-23 via browser network capture + trial payloads.
+// The request needs gearInstanceId (the exact docId) -- an empty body 500s with "Gear instance not
+// found" (confirmed), so this is NOT an "operate on whatever's equipped" endpoint; it targets one
+// specific instance. Restore (POST /api/gear/repair -> /api/gear/restore, same gearInstanceId
+// shape, confirmed via the same capture) is NOT wired in here on purpose -- user-directed 2026-09-23:
+// Restore rerolls the item's rarity (can go up, down, or stay the same, confirmed live: a Rare Twin
+// Lure rolled down to Common), so it's a real gamble on top of spending Gear Ember, not a neutral
+// reset. That stays a manual, deliberate action; this code only ever repairs, and warns instead of
+// restoring when repairs are maxed out.
+async function repairGear(gearInstanceId) {
+  const res = await fetch('https://gigaverse.io/api/gear/repair', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + jwt(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ gearInstanceId })
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error('repair failed ' + res.status + ' ' + (j.message || JSON.stringify(j)));
+  return j;
+}
+// Pure decision logic (no network) so this is unit-testable offline -- see test.js. Only equipped
+// items at EXACTLY 0 durability are actionable; anything above 0 is left alone regardless of how
+// low it is, matching the user's explicit rule (repair/restore only triggers at 0, never earlier).
+function decideGearActions(instances, catalog) {
+  const catalogById = {}; (catalog || []).forEach(c => catalogById[c.GAME_ITEM_ID_CID] = c);
+  const toRepair = [], needsRestore = [];
+  for (const inst of (instances || [])) {
+    if (inst.EQUIPPED_TO_SLOT_CID === -1 || inst.EQUIPPED_TO_SLOT_CID == null) continue;
+    if (inst.DURABILITY_CID !== 0) continue;
+    const cat = catalogById[inst.GAME_ITEM_ID_CID];
+    const maxRepairs = cat ? cat.REPAIR_COUNT_CID : null;
+    const usedRepairs = inst.REPAIR_COUNT_CID || 0;
+    const name = cat ? cat.NAME_CID : ('item ' + inst.GAME_ITEM_ID_CID);
+    if (maxRepairs != null && usedRepairs >= maxRepairs) needsRestore.push({ docId: inst.docId, name, usedRepairs, maxRepairs });
+    else toRepair.push({ docId: inst.docId, name, usedRepairs, maxRepairs });
+  }
+  return { toRepair, needsRestore };
+}
+// Called right before every start_run (both the very first fish of a game and each subsequent
+// fish in the same chain -- see playGame()) so a durability hit mid-batch gets repaired before the
+// NEXT cast, not just at the top of a batch. cfg.autoRepairGear defaults on since the user directed
+// this as standing behavior, not an opt-in-per-run action like oils/tier2-3 rings.
+async function checkAndRepairGear() {
+  if (!cfg.autoRepairGear) return;
+  let instances, catalog;
+  try {
+    [instances, catalog] = await Promise.all([fetchGearInstances(), fetchGearItemsCatalog()]);
+  } catch (e) { warn('  gear check failed:', e.message); return; }
+  const { toRepair, needsRestore } = decideGearActions(instances, catalog);
+  for (const item of needsRestore) {
+    warn(`  gear: ${item.name} is at 0 durability with repairs maxed (${item.usedRepairs}/${item.maxRepairs}) -- needs a manual Restore, NOT auto-restoring`);
+  }
+  for (const item of toRepair) {
+    try {
+      await repairGear(item.docId);
+      log(`  gear: repaired ${item.name} (was 0 durability, ${item.usedRepairs}/${item.maxRepairs} repairs used)`);
+    } catch (e) {
+      warn(`  gear: repair failed for ${item.name}:`, e.message);
+    }
+  }
 }
 async function fetchState() {
   const res = await fetch(API + '/state/' + cfg.address, { headers: { 'Authorization': 'Bearer ' + jwt() } });
@@ -1226,6 +1312,7 @@ async function playGame(n, fishBudget) {
   else if (pendingDraft) log(`run ${n}: resuming pending draft (caught ${(gs.caughtFish && gs.caughtFish.name) || '?'}, not yet looted)`);
   else {
     log(`run ${n}: START node=${cfg.nodeId} tier=${cfg.tierId}`);
+    await checkAndRepairGear();
     // The daily catch cap isn't reliably readable client-side: dayDocs[pond].data.deck.length vs
     // maxPerDayJuiced looked like the gate, but the Jebaitor skill can proc on a cast so it
     // doesn't count against the cap -- confirmed live 2026-09-09, start_run kept succeeding with
@@ -1320,6 +1407,7 @@ async function playGame(n, fishBudget) {
       // this try/catch meant a mid-batch cap-out surfaced as a raw "error: start_run failed 400 ..."
       // instead of the clean daycap stop, even though the outcome (stop, nothing more to catch) was
       // identical -- confirmed live 2026-09-09 when this exact path fired after catching Plankton.
+      await checkAndRepairGear();
       try {
         resp = await action('start_run', { nodeId: cfg.nodeId, tierId: cfg.tierId });
       } catch (e) {
@@ -1576,4 +1664,5 @@ module.exports = { run, stop: () => { stop = true; }, config: o => Object.assign
   rankDraft, scoreCard, exportRun, getRun: () => lastRun, cfg,
   _predict: predict, _decide: decide, _shouldRedraw: shouldRedraw, _drawPool: drawPool, _effectAt: effectAt, _reachable: reachable, _reachableWeighted: reachableWeighted, _zoneCell: zoneCell,
   _chooseAction: chooseAction, _lookaheadValue: lookaheadValue, _bestPositionFor: bestPositionFor, _positionsFor: positionsFor, _evaluateRedraw: evaluateRedraw, _combos: combos, _playValue: playValue,
-  _zoneDensity: zoneDensity, _loadEmpiricalPriors: loadEmpiricalPriors, _leafEstimate: leafEstimate };
+  _zoneDensity: zoneDensity, _loadEmpiricalPriors: loadEmpiricalPriors, _leafEstimate: leafEstimate,
+  _decideGearActions: decideGearActions, _checkAndRepairGear: checkAndRepairGear };

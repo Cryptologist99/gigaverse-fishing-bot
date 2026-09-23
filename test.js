@@ -659,3 +659,41 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
   eq('riskAversionWeight: logged val stays close to the TRUE value (risk discount does not leak into it)',
      Math.abs(played.val - playedAtZero.val) < 0.05, true);
 }
+
+// ============================================================================================
+// decideGearActions (2026-09-23): pure decision logic for the auto-repair-before-cast feature.
+// Real catalog shapes confirmed live via browser network capture -- REPAIR_COUNT_CID means two
+// different things on the two endpoints (max allowed on the catalog item, repairs already used
+// on the account's instance), and only EXACTLY 0 durability is actionable.
+{
+  const catalog = [
+    { GAME_ITEM_ID_CID: 924, NAME_CID: "Puppeteer's Rod [GEAR]", REPAIR_COUNT_CID: 3 }, // rod, max 3
+    { GAME_ITEM_ID_CID: 634, NAME_CID: 'Malafungus Head [GEAR]', REPAIR_COUNT_CID: 5 }, // head, max 5
+  ];
+  const notEquipped = { docId: 'A', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 0, REPAIR_COUNT_CID: 1, EQUIPPED_TO_SLOT_CID: -1 };
+  const aboveZero   = { docId: 'B', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 5, REPAIR_COUNT_CID: 1, EQUIPPED_TO_SLOT_CID: 14 };
+  const repairable  = { docId: 'C', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 0, REPAIR_COUNT_CID: 2, EQUIPPED_TO_SLOT_CID: 14 };
+  const maxedRepairs= { docId: 'D', GAME_ITEM_ID_CID: 634, DURABILITY_CID: 0, REPAIR_COUNT_CID: 5, EQUIPPED_TO_SLOT_CID: 11 };
+
+  { const { toRepair, needsRestore } = FB._decideGearActions([notEquipped], catalog);
+    eq('decideGearActions: ignores an unequipped item even at 0 durability', toRepair.length + needsRestore.length, 0); }
+
+  { const { toRepair, needsRestore } = FB._decideGearActions([aboveZero], catalog);
+    eq('decideGearActions: ignores an equipped item above 0 durability (however low)', toRepair.length + needsRestore.length, 0); }
+
+  { const { toRepair, needsRestore } = FB._decideGearActions([repairable], catalog);
+    eq('decideGearActions: an equipped item at 0 durability with repairs left -> toRepair', toRepair.length, 1);
+    eq('decideGearActions: ...never needsRestore when repairs remain', needsRestore.length, 0);
+    eq('decideGearActions: toRepair carries the exact docId to send as gearInstanceId', toRepair[0] && toRepair[0].docId, 'C'); }
+
+  { const { toRepair, needsRestore } = FB._decideGearActions([maxedRepairs], catalog);
+    eq('decideGearActions: an equipped item at 0 durability with repairs MAXED -> needsRestore, not toRepair', needsRestore.length, 1);
+    eq('decideGearActions: ...never auto-added to toRepair when maxed', toRepair.length, 0); }
+
+  { const { toRepair, needsRestore } = FB._decideGearActions(
+      [notEquipped, aboveZero, repairable, maxedRepairs], catalog);
+    eq('decideGearActions: mixed real-shaped list -- exactly the one repairable item goes to toRepair',
+       toRepair.map(x => x.docId), ['C']);
+    eq('decideGearActions: mixed real-shaped list -- exactly the one maxed item goes to needsRestore',
+       needsRestore.map(x => x.docId), ['D']); }
+}

@@ -260,6 +260,52 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
   future runs before further tuning `depth3TimeBudgetMs` or `closeCallGap`, rather than reasoning
   from a single example again.
 
+## Gear durability, repair, and Restore (reverse-engineered live, 2026-09-23)
+- Equipped fishing gear (Head/Body/Charm/Rod/Lure, found via the in-game "Forest Shrine -> Equipment
+  -> Forbidden Woods Gear" screen) has real durability that drops with use, separate from every
+  other resource (mana, focus, energy). **Confirmed empirically: exactly -1 durability per CAST
+  (one fish, win or lose), no exceptions observed** -- not per turn, not per game/chain.
+- Two real, previously-undocumented API endpoints (found via live browser network capture, not
+  guessed):
+  - `GET /api/account/<address>` -- account-level summary (username, Noob NFT, checkpoint
+    progress, and a cosmetic `equipment` block for Body/Head SKIN slots -- these are `TYPE_CID:
+    "Skin"` items with no durability, a completely different system from the fishing gear below;
+    don't confuse the two).
+  - `GET /api/gear/instances/<address>` -- every gear instance the account owns, each with
+    `GAME_ITEM_ID_CID` (which item), `DURABILITY_CID` (current durability), `RARITY_CID` (0-6),
+    `EQUIPPED_TO_SLOT_CID` (`-1` = not equipped), `REPAIR_COUNT_CID` (repairs already used on THIS
+    instance).
+  - `GET /api/gear/items` -- the static gear catalog: `NAME_CID`, `DURABILITY_CID_array` (max
+    durability indexed BY RARITY -- e.g. Puppeteer's Rod is `[40,44,50,60]`, so an Epic (rarity 3)
+    one maxes at 60, confirmed exactly against the in-game `[47/60]` display), `repairCost`
+    (`INPUT_ID_CID_array`/`INPUT_AMOUNT_CID_array` for a normal repair, `RESET_INPUT_ID_CID_array`/
+    `RESET_INPUT_AMOUNT_CID_array` for Restore -- always item 250, "Gear Ember"), and
+    `REPAIR_COUNT_CID` -- **max repairs allowed is NOT a flat 3 for everything** (same field name
+    as the instance's "repairs used", different meaning on this endpoint) -- confirmed 5 for
+    Head/Body armor, 3 for Ring/Rod/Lure.
+- **`POST /api/gear/repair`** -- repairs one instance. Requires `{"gearInstanceId": "<docId>"}` in
+  the body -- an empty body genuinely 500s with `"Gear instance not found"` (confirmed live), so
+  this is NOT a "whatever's equipped" endpoint, it targets one exact instance. The correct field
+  name (`gearInstanceId`) was only found by trying candidates directly against the live API after
+  browser network capture showed an empty body -- the real client likely serializes this at a
+  layer below `window.fetch` that page-level interception can't see. Repairing does NOT restore to
+  full durability -- confirmed it goes to a fixed value (durability 0 -> 20 for a Twin Lure whose
+  rarity-0 max is also 20, i.e. it happened to be full in that case; needs more data points to know
+  if repair always sets full-for-current-rarity or some other fixed amount) and increments
+  `REPAIR_COUNT_CID` by 1.
+- **`POST /api/gear/restore`** -- same request shape (`{"gearInstanceId": ...}`), used once repairs
+  are maxed out. **Restore REROLLS the item's rarity** (confirmed live: a Rare Twin Lure rolled
+  down to Common) -- it is not a neutral reset, it's a gamble on top of spending Gear Ember. Resets
+  `REPAIR_COUNT_CID` to 0 and sets durability to the new rarity's max.
+- **Auto-repair is wired into the bot** (`cfg.autoRepairGear`, default ON -- user-directed
+  2026-09-23 as standing behavior, unlike oils/tier2-3 rings which stay opt-in-per-run):
+  `checkAndRepairGear()` runs before EVERY `start_run` call in `playGame()` (both the first fish of
+  a game and every subsequent fish in the same chain -- not just once per batch), so a durability
+  hit mid-batch gets repaired before the next cast, not just at the top. It repairs any equipped
+  item at exactly 0 durability with repairs remaining; if repairs are maxed, it only WARNS (never
+  auto-restores -- that stays a manual, deliberate action given the rarity-reroll gamble above).
+  The pure decision part (`decideGearActions`) is unit-tested offline in `test.js`.
+
 ## Escalation UX: `--maxTurnMs`, and making the pause legible (2026-09-23)
 - Live telemetry (n=608 real play-turns, 2026-09-20/21/22) showed escalation is attempted on
   ~55-60% of turns, not the rare edge case it was assumed to be -- and ~27% of attempts run out
