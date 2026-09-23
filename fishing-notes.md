@@ -282,6 +282,17 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
      decide whether to change `--maxTurnMs` next time.
 - None of this changes the default (still 90000ms / 90s) or the escalation logic itself -- purely
   visibility. Full regression suite (106/106) unaffected.
+- **Follow-up same day**: the timeout RATE was answerable from existing telemetry (27.2% of
+  attempts, n=342, 2026-09-20/21/22), but how long a SUCCESSFUL escalation actually takes was not
+  -- the elapsed time only ever existed in the live "done in Xs" log line, never persisted. Added
+  `escalationMs` alongside the existing `escalated`/`escalationAttempted`/`escalationTimedOut`
+  turn-snapshot fields (set in `chooseAction`, threaded through both turn-snapshot construction
+  sites in `playGame`) so this becomes queryable from real data too. Note: on a TIMED-OUT turn,
+  `escalationMs` is ~= `depth3TimeBudgetMs` by construction (the deadline that just fired), not a
+  meaningful "how long would this actually have taken" measurement -- only trust this field's
+  distribution on `escalated:true` turns for answering "how long does escalation usually take when
+  it doesn't time out." No data exists yet as of this writing -- first numbers come from the next
+  live batch run under this build.
 
 ## leafEstimate ignored redraw cost entirely (fixed 2026-09-22)
 - **Bug**: `leafEstimate`'s affordability math (`mana / playsNeeded`) implicitly assumed every future

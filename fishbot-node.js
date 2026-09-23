@@ -969,7 +969,7 @@ function chooseAction(gs, hist, pr, allowRedraw) {
   // Scoped to ONLY the top-two candidates at the TOP level, not recursively inside lookaheadValue's
   // own future-ply search -- escalating there too would multiply the branching factor through the
   // whole tree, the same blowup the shortlist-rerank fix upstream of this deliberately avoided.
-  let escalated = false, escalationAttempted = false, escalationTimedOut = false;
+  let escalated = false, escalationAttempted = false, escalationTimedOut = false, escalationMs = null;
   if (cfg.closeCallGap > 0) {
     // Selecting/gap-checking here MUST use the same risk-adjusted score bestPlay was picked with
     // above (rank field), or escalation can pick and promote a DIFFERENT top-2 than the real
@@ -1032,17 +1032,22 @@ function chooseAction(gs, hist, pr, allowRedraw) {
         applyEscalated(a);
         applyEscalated(b);
         escalated = true;
-        log(`     (done in ${((Date.now() - escStart) / 1000).toFixed(1)}s -- used the deeper check)`);
+        escalationMs = Date.now() - escStart;
+        log(`     (done in ${(escalationMs / 1000).toFixed(1)}s -- used the deeper check)`);
       } catch (e) {
         if (!(e instanceof LookaheadBudgetExceeded)) throw e;
         // ran out of time -- abandon the escalation, keep the original depth-2 ranking untouched.
         // escalationTimedOut is the signal that tells us (via the persisted turn snapshot -- see
         // playGame()) how often this actually happens live, which nothing tracked before 2026-09-19.
         escalationTimedOut = true;
+        // escalationMs here is ~= depth3TimeBudgetMs by construction (the deadline that just fired),
+        // not a real "how long would this have taken" measurement -- kept anyway for symmetry with
+        // the success case and so a timed-out turn's snapshot still records SOMETHING it spent.
+        escalationMs = Date.now() - escStart;
         // This is the concrete, in-the-moment demonstration of what a lower --maxTurnMs actually
         // costs: not a crash or a worse answer, just falling back to the original (faster, less
         // certain) 2-ply decision instead of the deeper one.
-        log(`     (gave up after ${((Date.now() - escStart) / 1000).toFixed(1)}s -- used the faster, less certain answer instead)`);
+        log(`     (gave up after ${(escalationMs / 1000).toFixed(1)}s -- used the faster, less certain answer instead)`);
       } finally {
         lookaheadDeadline = prevDeadline;
       }
@@ -1075,12 +1080,12 @@ function chooseAction(gs, hist, pr, allowRedraw) {
     // Return directly rather than falling through to the value comparison below -- that
     // comparison is exactly what this rule exists to override (redrawVal is still numerically
     // higher than this card's own recursive value; that's the whole reason we're forcing it).
-    return { type: 'play', mv: forcedMv, redrawVal, handEval, escalated, escalationAttempted, escalationTimedOut };
+    return { type: 'play', mv: forcedMv, redrawVal, handEval, escalated, escalationAttempted, escalationTimedOut, escalationMs };
   }
 
-  if (!bestPlay && redrawVal === -Infinity) return { type: 'none', handEval, escalated, escalationAttempted, escalationTimedOut };
-  if (!bestPlay || redrawVal > bestPlay.val) return { type: 'redraw', val: redrawVal, playVal: bestPlay && bestPlay.val, handEval, escalated, escalationAttempted, escalationTimedOut };
-  return { type: 'play', mv: bestPlay, redrawVal, handEval, escalated, escalationAttempted, escalationTimedOut };
+  if (!bestPlay && redrawVal === -Infinity) return { type: 'none', handEval, escalated, escalationAttempted, escalationTimedOut, escalationMs };
+  if (!bestPlay || redrawVal > bestPlay.val) return { type: 'redraw', val: redrawVal, playVal: bestPlay && bestPlay.val, handEval, escalated, escalationAttempted, escalationTimedOut, escalationMs };
+  return { type: 'play', mv: bestPlay, redrawVal, handEval, escalated, escalationAttempted, escalationTimedOut, escalationMs };
 }
 
 /* ---- deck draft ----------------------------------------------------------------- */
@@ -1349,7 +1354,7 @@ async function playGame(n, fishBudget) {
         predicted: pr.cand.map(c => c.cell), predictedExact: pr.exact, why: pr.why, card: null, covered: [], critCells: [],
         result: 'redraw', manaBefore: gs.playerHp, focusBefore: gs.focusMeter, fishHpBefore: gs.fishHp, fishMaxHp: gs.fishMaxHp,
         drawPool: gs.fullDeck ? drawPool(gs) : undefined, choiceVal: choice.val, playVal: choice.playVal, handEval: choice.handEval,
-        escalated: choice.escalated, escalationAttempted: choice.escalationAttempted, escalationTimedOut: choice.escalationTimedOut };
+        escalated: choice.escalated, escalationAttempted: choice.escalationAttempted, escalationTimedOut: choice.escalationTimedOut, escalationMs: choice.escalationMs };
       log(`  t${t}: ${candStr} -> REDRAW (discard ${cost}, -${cost} mana)`);
       resp = await action('play_cards', { cards: [], focusPoint: gs.focusPoint });
       { const before = hist[hist.length - 1]; gs = stateOf(resp); hist.push(gs.fishPosition.slice());
@@ -1370,7 +1375,7 @@ async function playGame(n, fishBudget) {
       moveCost: mv.moveCost, ev: +mv.ev.toFixed(2), pHit: +(mv.pHit || 0).toFixed(2),
       manaBefore: gs.playerHp, focusBefore: gs.focusMeter, fishHpBefore: gs.fishHp, fishMaxHp: gs.fishMaxHp,
       drawPool: gs.fullDeck ? drawPool(gs) : undefined, choiceVal: mv.val, redrawVal: choice.redrawVal, handEval: choice.handEval,
-      escalated: choice.escalated, escalationAttempted: choice.escalationAttempted, escalationTimedOut: choice.escalationTimedOut };
+      escalated: choice.escalated, escalationAttempted: choice.escalationAttempted, escalationTimedOut: choice.escalationTimedOut, escalationMs: choice.escalationMs };
     log(`  t${t}: ${candStr} -> card ${mv.cardId} @bobber[${mv.focus}] (move ${mv.moveCost}f) pHit ${((mv.pHit || 0) * 100).toFixed(0)}%`);
 
     // Big Dual Yield Oil: only spend it the turn a catch looks imminent AND likely (per user
