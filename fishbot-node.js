@@ -1507,6 +1507,13 @@ if (require.main === module) {
     if (m) args[m[1]] = isPlainDecimal(m[2]) ? +m[2] : m[2];
   }
   const oilFlagGiven = ['useOils', 'oilItemId', 'oilTierId', 'oilPHitThreshold'].some(k => k in args);
+  // --maxTurnMs is a friendlier alias for cfg.depth3TimeBudgetMs -- same underlying knob (any cfg
+  // field is already settable via --fieldName=value, but that internal name gives no hint of what
+  // it controls). This is the cap on how long the bot may spend re-checking a close call one ply
+  // deeper before falling back to its 2-ply answer -- see depth3TimeBudgetMs's cfg comment for why
+  // the shipped default (90s) favors decision quality over turn speed. Lower it for snappier turns
+  // at the cost of occasionally missing a close-call improvement; raise it to never time out.
+  if ('maxTurnMs' in args) { args.depth3TimeBudgetMs = args.maxTurnMs; delete args.maxTurnMs; }
   Object.assign(cfg, args);
   process.on('SIGINT', () => { stop = true; log('stopping...'); });
   promptForOilConfig(oilFlagGiven)

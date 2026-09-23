@@ -76,6 +76,10 @@ This runs exactly one fish and stops. Useful flags:
 - `--useOils=true --oilItemId=... --oilPHitThreshold=...` — skip the interactive oil prompt and use
   oils with these settings directly (for scripted/non-interactive runs). Leave these unset to be
   asked each time you run it in a real terminal.
+- `--maxTurnMs=N` — how long (ms) the bot may spend re-checking a genuinely close play-vs-redraw call
+  one ply deeper before giving up and using its faster answer instead (default 90000 = 90s). Most
+  turns are instant; this only matters on close calls. Lower it for snappier turns at the cost of
+  occasionally missing a close-call improvement, or raise it to favor decision quality over speed.
 
 Each run writes a JSON log to `runs/run-<timestamp>.json` (created automatically).
 
