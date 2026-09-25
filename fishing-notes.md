@@ -320,6 +320,33 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
   - The pure decision parts (`decideGearActions`, `computeMaterialShortfall`) are unit-tested
     offline in `test.js`.
 
+## CLI boolean flags silently did nothing when set to `false` (fixed 2026-09-25)
+- **Real bug, reported by a user's friend running the public repo (via their own LLM's code
+  review)**: `--autoRepairGear=false` and `--continueOnBrokenGear=false` had no effect. The CLI
+  arg parser only ever coerced plain decimal numbers (`--maxFish=3`) -- everything else, including
+  the literal text `"false"`, stayed a STRING. Since any non-empty string is truthy in JS,
+  `if (!cfg.autoRepairGear) return;` never returned early: `cfg.autoRepairGear` held the string
+  `"false"`, not the boolean `false`. **`--continueOnBrokenGear=false` was worse, not just inert**
+  -- its default is already `false`, so explicitly passing `=false` (e.g. to be safe/explicit)
+  flipped it to a truthy string and enabled the opposite behavior (continue fishing through broken
+  gear) instead of the intended no-op. `--autoRepairGear=0` / `--continueOnBrokenGear=0` worked as
+  a workaround the whole time (numeric `0` parsed correctly and is falsy), which is how the bug
+  went unnoticed through this project's own testing -- only `=false`/`=true` text was ever affected.
+- **Fix**: extracted CLI parsing into two pure, testable functions -- `coerceCliValue(s)` (now
+  also recognizes literal `"true"`/`"false"` and returns real booleans) and `parseCliArgs(argv)`
+  (the `--flag=value` loop itself, previously inlined only inside the `if (require.main ===
+  module)` block and untestable). The live CLI entry point just calls `parseCliArgs(process.argv
+  .slice(2))` now.
+- Verified two ways, both in `test.js`: (1) direct assertions that `coerceCliValue`/`parseCliArgs`
+  return real booleans for every case that matters, and (2) an end-to-end test that mocks
+  `global.fetch` for the gear endpoints, runs `--autoRepairGear=false` through the REAL parser, and
+  confirms a genuinely-0-durability mocked item does NOT get a repair POST -- with a same-block
+  sanity check confirming the identical mocked item DOES get repaired when the flag is left at its
+  default. This is the exact bug, proven fixed, not just type-checked.
+- This was a systemic issue affecting every current and future boolean-typed cfg field set via
+  `=false` on the CLI, not just the two gear ones -- worth remembering if a future flag seems to
+  silently not take effect.
+
 ## Escalation UX: `--maxTurnMs`, and making the pause legible (2026-09-23)
 - Live telemetry (n=608 real play-turns, 2026-09-20/21/22) showed escalation is attempted on
   ~55-60% of turns, not the rare edge case it was assumed to be -- and ~27% of attempts run out

@@ -1684,18 +1684,38 @@ async function promptForOilConfig(already) {
   }
 }
 
+// Coerces one raw --flag=value CLI string into the value it should hold: real booleans for
+// "true"/"false", real numbers for plain decimals, string otherwise. Real bug fixed 2026-09-25
+// (reported by a user's friend running the public repo, via their own LLM's code review): the
+// previous version left "true"/"false" as STRINGS, and since any non-empty string is truthy in
+// JS, --autoRepairGear=false (and --continueOnBrokenGear=false) silently did nothing --
+// `if (!cfg.autoRepairGear) return;` never returned early because cfg.autoRepairGear held the
+// STRING "false", not the boolean false. Worse for continueOnBrokenGear specifically: its default
+// is already false, so explicitly passing =false to be sure flipped it to a truthy string instead
+// -- the OPPOSITE of what was asked, not just a no-op. Unary `+` also parses hex strings ("0x...")
+// as numbers, so a naive `isNaN(+s)` "is this a number" check would silently corrupt
+// --address=0x... into a huge float -- confirmed by testing --tokenFile/--address before relying
+// on them, not by inspection, so the plain-decimal regex stays deliberately narrow.
+function coerceCliValue(s) {
+  if (s === 'true') return true;
+  if (s === 'false') return false;
+  return /^-?\d+(\.\d+)?$/.test(s) ? +s : s;
+}
+// Parses --flag=value CLI args into a plain object. Pure and testable (see test.js) -- extracted
+// out of the CLI entry point below specifically so the parsing behavior itself (not just its
+// effects on a live process) can be asserted against directly.
+function parseCliArgs(argv) {
+  const args = {};
+  for (const a of argv) {
+    const m = a.match(/^--([\w]+)=(.+)$/);
+    if (m) args[m[1]] = coerceCliValue(m[2]);
+  }
+  return args;
+}
+
 /* ---- CLI entry point ------------------------------------------------------------ */
 if (require.main === module) {
-  const args = {};
-  // Only coerce plain decimal numbers (e.g. --maxFish=3). Unary `+` also parses hex strings
-  // ("0x...") as numbers, so the naive `isNaN(+m[2])` check silently corrupted any
-  // --address=0x... into a huge float -- a real bug, caught by testing the new --tokenFile/
-  // --address flags before relying on them, not by inspection.
-  const isPlainDecimal = s => /^-?\d+(\.\d+)?$/.test(s);
-  for (const a of process.argv.slice(2)) {
-    const m = a.match(/^--([\w]+)=(.+)$/);
-    if (m) args[m[1]] = isPlainDecimal(m[2]) ? +m[2] : m[2];
-  }
+  const args = parseCliArgs(process.argv.slice(2));
   const oilFlagGiven = ['useOils', 'oilItemId', 'oilTierId', 'oilPHitThreshold'].some(k => k in args);
   // --maxTurnMs is a friendlier alias for cfg.depth3TimeBudgetMs -- same underlying knob (any cfg
   // field is already settable via --fieldName=value, but that internal name gives no hint of what
@@ -1717,4 +1737,5 @@ module.exports = { run, stop: () => { stop = true; }, config: o => Object.assign
   _chooseAction: chooseAction, _lookaheadValue: lookaheadValue, _bestPositionFor: bestPositionFor, _positionsFor: positionsFor, _evaluateRedraw: evaluateRedraw, _combos: combos, _playValue: playValue,
   _zoneDensity: zoneDensity, _loadEmpiricalPriors: loadEmpiricalPriors, _leafEstimate: leafEstimate,
   _decideGearActions: decideGearActions, _checkAndRepairGear: checkAndRepairGear,
-  _computeMaterialShortfall: computeMaterialShortfall };
+  _computeMaterialShortfall: computeMaterialShortfall,
+  _coerceCliValue: coerceCliValue, _parseCliArgs: parseCliArgs };

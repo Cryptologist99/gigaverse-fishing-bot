@@ -724,3 +724,83 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
      FB._computeMaterialShortfall([23, 22], [5, 5], [0, 0]),
      [{ id: 23, need: 5, have: 0 }, { id: 22, need: 5, have: 0 }]);
 }
+
+// ============================================================================================
+// CLI arg parsing (bug fixed 2026-09-25, reported by a user's friend running the public repo via
+// their own LLM's code review): --autoRepairGear=false (and --continueOnBrokenGear=false) used to
+// parse to the STRING "false", which is truthy in JS -- so `if (!cfg.autoRepairGear) return;`
+// never returned early, and the flag silently did nothing. --continueOnBrokenGear=false was worse:
+// its default is already false, so explicitly passing =false flipped it to a truthy string --
+// the OPPOSITE of the intent, not just a no-op.
+{
+  eq('coerceCliValue: "false" -> real boolean false (the actual bug)', FB._coerceCliValue('false'), false);
+  eq('coerceCliValue: "true" -> real boolean true', FB._coerceCliValue('true'), true);
+  eq('coerceCliValue: a plain decimal -> a real number', FB._coerceCliValue('90000'), 90000);
+  eq('coerceCliValue: a negative decimal -> a real number', FB._coerceCliValue('-1000'), -1000);
+  eq('coerceCliValue: a hex address stays a STRING (never coerced to a number)',
+     FB._coerceCliValue('0x7f9Dc44Ec4EE1E8ccaC4AE04Fd541e4acE0E4942'), '0x7f9Dc44Ec4EE1E8ccaC4AE04Fd541e4acE0E4942');
+  eq('coerceCliValue: an arbitrary string passes through unchanged', FB._coerceCliValue('token.txt'), 'token.txt');
+
+  eq('parseCliArgs: --autoRepairGear=false parses to real boolean false, not the string',
+     FB._parseCliArgs(['--autoRepairGear=false']), { autoRepairGear: false });
+  eq('parseCliArgs: --continueOnBrokenGear=false parses to real boolean false, not a truthy string',
+     FB._parseCliArgs(['--continueOnBrokenGear=false']), { continueOnBrokenGear: false });
+  eq('parseCliArgs: multiple flags, mixed types, parsed together',
+     FB._parseCliArgs(['--maxFish=3', '--autoRepairGear=false', '--address=0xAbC']),
+     { maxFish: 3, autoRepairGear: false, address: '0xAbC' });
+
+  // End-to-end through the real gate: this is exactly the condition checkAndRepairGear's early
+  // return depends on (`if (!cfg.autoRepairGear) return;`) -- assert the PARSED value actually
+  // gates it correctly, not just that it has the right type.
+  const parsed = FB._parseCliArgs(['--autoRepairGear=false']);
+  eq('parseCliArgs -> the real early-return guard now actually returns early',
+     !parsed.autoRepairGear, true);
+}
+
+// ============================================================================================
+// End-to-end: --autoRepairGear=false must actually prevent any repair/restore network call, not
+// just parse to the right type (the bug's real-world symptom). Mocks fetch for gear endpoints
+// only, scoped to this block and restored after -- test.js otherwise stays fully offline.
+// Wrapped in an async IIFE (this file has no top-level await, being plain CommonJS) -- it's the
+// LAST block in the file, so nothing after it depends on running synchronously first.
+//
+// Points tokenFile at the repo's own committed test-token.txt fixture (same one test-run.js uses)
+// rather than relying on a real token.txt existing -- jwt() reads that file synchronously, and a
+// fresh clone (or the public mirror, which never had a real token.txt on disk) legitimately
+// doesn't have one yet. Without this, jwt() throws ENOENT, repairGear() never reaches the mocked
+// fetch, checkAndRepairGear's own per-item try/catch silently swallows it, and the test fails for
+// a reason that has nothing to do with what it's actually testing -- found live 2026-09-25 when
+// this exact test passed against the private working copy (which happens to have a real
+// token.txt) but failed against the public mirror (which never has).
+(async () => {
+  const realFetch = global.fetch;
+  const savedTokenFile = FB.cfg.tokenFile;
+  FB.config({ tokenFile: 'test-token.txt' });
+  const posted = [];
+  global.fetch = async (url, init) => {
+    if (typeof url === 'string' && url.includes('/api/gear/instances/')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { docId: 'X', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 0, REPAIR_COUNT_CID: 1, EQUIPPED_TO_SLOT_CID: 14 } ] }) };
+    }
+    if (typeof url === 'string' && url.includes('/api/gear/items')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { GAME_ITEM_ID_CID: 924, NAME_CID: "Puppeteer's Rod [GEAR]", REPAIR_COUNT_CID: 3 } ] }) };
+    }
+    if (init && init.method === 'POST') { posted.push(url); return { ok: true, status: 200, json: async () => ({}) }; }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  const savedAuto = FB.cfg.autoRepairGear;
+  FB.config(FB._parseCliArgs(['--autoRepairGear=false']));
+  await FB._checkAndRepairGear();
+  eq('--autoRepairGear=false (through the real parser): a real 0-durability item does NOT get repaired',
+     posted.length, 0);
+
+  FB.config({ autoRepairGear: true });
+  await FB._checkAndRepairGear();
+  eq('sanity check: the same mocked item DOES get repaired with the flag left at its default (true)',
+     posted.length, 1);
+
+  FB.config({ autoRepairGear: savedAuto, tokenFile: savedTokenFile });
+  global.fetch = realFetch;
+})();
