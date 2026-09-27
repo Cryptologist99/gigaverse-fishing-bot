@@ -665,17 +665,44 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
 // Real catalog shapes confirmed live via browser network capture -- REPAIR_COUNT_CID means two
 // different things on the two endpoints (max allowed on the catalog item, repairs already used
 // on the account's instance), and only EXACTLY 0 durability is actionable.
+//
+// itemEffects/triggerType shapes below are real, confirmed live 2026-09-26 by pulling every
+// equipped item on the main account: Rod/Lure carry ONLY "OnStartFishing"; Head/Body/Ring/Orb
+// carry "OnStartDungeon" (sometimes alongside OnDamage/OnDeath) and NEVER "OnStartFishing".
+const FISHING_TRIGGER = [{ effects: [{ triggerType: 'OnStartFishing', durabilityChange: -1 }] }];
+const DUNGEON_TRIGGER = [{ effects: [{ triggerType: 'OnStartDungeon', durabilityChange: -1 }] }];
+
+{
+  eq('isFishingGear: a Rod/Lure-shaped catalog entry (OnStartFishing) -> true',
+     FB._isFishingGear({ itemEffects: FISHING_TRIGGER }), true);
+  eq('isFishingGear: a Head/Body/Ring/Orb-shaped entry (OnStartDungeon only) -> false',
+     FB._isFishingGear({ itemEffects: DUNGEON_TRIGGER }), false);
+  eq('isFishingGear: an item with combat triggers (OnDamage/OnDeath) but no OnStartFishing -> false',
+     FB._isFishingGear({ itemEffects: [{ effects: [{ triggerType: 'OnDamage' }, { triggerType: 'OnDeath' }] }] }), false);
+  eq('isFishingGear: missing/unknown catalog entry -> false (never guess an unknown item is fishing-relevant)',
+     FB._isFishingGear(undefined), false);
+}
+
 {
   const catalog = [
     { GAME_ITEM_ID_CID: 924, NAME_CID: "Puppeteer's Rod [GEAR]", REPAIR_COUNT_CID: 3, // rod, max 3
+      itemEffects: FISHING_TRIGGER,
       repairCost: { RESET_INPUT_ID_CID_array: [250], RESET_INPUT_AMOUNT_CID_array: [5] } },
-    { GAME_ITEM_ID_CID: 634, NAME_CID: 'Malafungus Head [GEAR]', REPAIR_COUNT_CID: 5, // head, max 5
+    { GAME_ITEM_ID_CID: 952, NAME_CID: 'Sticky Lure [GEAR]', REPAIR_COUNT_CID: 3, // lure, max 3
+      itemEffects: FISHING_TRIGGER,
+      repairCost: { RESET_INPUT_ID_CID_array: [250], RESET_INPUT_AMOUNT_CID_array: [5] } },
+    { GAME_ITEM_ID_CID: 634, NAME_CID: 'Malafungus Head [GEAR]', REPAIR_COUNT_CID: 5, // head, max 5 -- DUNGEON ONLY
+      itemEffects: DUNGEON_TRIGGER,
       repairCost: { RESET_INPUT_ID_CID_array: [250], RESET_INPUT_AMOUNT_CID_array: [5] } },
   ];
   const notEquipped = { docId: 'A', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 0, REPAIR_COUNT_CID: 1, EQUIPPED_TO_SLOT_CID: -1 };
   const aboveZero   = { docId: 'B', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 5, REPAIR_COUNT_CID: 1, EQUIPPED_TO_SLOT_CID: 14 };
   const repairable  = { docId: 'C', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 0, REPAIR_COUNT_CID: 2, EQUIPPED_TO_SLOT_CID: 14 };
-  const maxedRepairs= { docId: 'D', GAME_ITEM_ID_CID: 634, DURABILITY_CID: 0, REPAIR_COUNT_CID: 5, EQUIPPED_TO_SLOT_CID: 11 };
+  const maxedRepairs= { docId: 'D', GAME_ITEM_ID_CID: 952, DURABILITY_CID: 0, REPAIR_COUNT_CID: 3, EQUIPPED_TO_SLOT_CID: 15 };
+  // Same shape as maxedRepairs (0 durability, repairs maxed, equipped) but a DUNGEON-only item --
+  // this is the exact real-world case that used to wrongly block fishing (a broken Head/Body/Ring
+  // piece has nothing to do with fishing and must be completely ignored here).
+  const dungeonBroken = { docId: 'E', GAME_ITEM_ID_CID: 634, DURABILITY_CID: 0, REPAIR_COUNT_CID: 5, EQUIPPED_TO_SLOT_CID: 11 };
 
   { const { toRepair, needsRestore } = FB._decideGearActions([notEquipped], catalog);
     eq('decideGearActions: ignores an unequipped item even at 0 durability', toRepair.length + needsRestore.length, 0); }
@@ -695,11 +722,15 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
        needsRestore[0] && needsRestore[0].resetInputs, [250]);
     eq('decideGearActions: ...and the amount needed', needsRestore[0] && needsRestore[0].resetAmounts, [5]); }
 
+  { const { toRepair, needsRestore } = FB._decideGearActions([dungeonBroken], catalog);
+    eq('decideGearActions: a broken DUNGEON-only item (Head/Body/Ring/Orb) is completely ignored, even at 0 durability with repairs maxed',
+       toRepair.length + needsRestore.length, 0); }
+
   { const { toRepair, needsRestore } = FB._decideGearActions(
-      [notEquipped, aboveZero, repairable, maxedRepairs], catalog);
+      [notEquipped, aboveZero, repairable, maxedRepairs, dungeonBroken], catalog);
     eq('decideGearActions: mixed real-shaped list -- exactly the one repairable item goes to toRepair',
        toRepair.map(x => x.docId), ['C']);
-    eq('decideGearActions: mixed real-shaped list -- exactly the one maxed item goes to needsRestore',
+    eq('decideGearActions: mixed real-shaped list -- exactly the one maxed FISHING item goes to needsRestore (dungeon item excluded)',
        needsRestore.map(x => x.docId), ['D']); }
 }
 
@@ -784,7 +815,8 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
     }
     if (typeof url === 'string' && url.includes('/api/gear/items')) {
       return { ok: true, status: 200, json: async () => ({ entities: [
-        { GAME_ITEM_ID_CID: 924, NAME_CID: "Puppeteer's Rod [GEAR]", REPAIR_COUNT_CID: 3 } ] }) };
+        { GAME_ITEM_ID_CID: 924, NAME_CID: "Puppeteer's Rod [GEAR]", REPAIR_COUNT_CID: 3,
+          itemEffects: FISHING_TRIGGER } ] }) };
     }
     if (init && init.method === 'POST') { posted.push(url); return { ok: true, status: 200, json: async () => ({}) }; }
     return { ok: true, status: 200, json: async () => ({}) };
@@ -801,6 +833,90 @@ const card2d = { id:2, manaCost:1, hitZones:[4,5,6], critZones:[], hitEffects:[{
   eq('sanity check: the same mocked item DOES get repaired with the flag left at its default (true)',
      posted.length, 1);
 
-  FB.config({ autoRepairGear: savedAuto, tokenFile: savedTokenFile });
+  // tokenFile stays on the test fixture until the very end of this block -- restoring it here made
+  // every later scenario read a real token.txt (present in the private copy, absent in a fresh
+  // clone), so they "passed" in one checkout and failed in the other.
+  FB.config({ autoRepairGear: savedAuto });
+
+  // ============================================================================================
+  // End-to-end: a gear item whose catalog entry has an EMPTY RESET_INPUT_ID_CID_array (no Restore
+  // recipe at all) must be treated as un-restorable, never as "affordable" --
+  // computeMaterialShortfall([], [], []) vacuously returns [] (nothing to be short of), which used
+  // to read as a green light and call the real restore endpoint, which then 500s with "Reset items
+  // not found" (there's no reset recipe server-side either) -- an uncaught exception that killed
+  // an entire live 50-fish batch before a single fish was cast, on the very first
+  // checkAndRepairGear() call. Uses a fishing-relevant item (Lure) so this scenario isolates the
+  // empty-reset-array bug specifically, independent of the fishing-relevance filter tested below.
+  //
+  // Chained sequentially after the block above (same IIFE, not a separate un-awaited one) --
+  // a second top-level (async () => {...})() here would start running before the first one's
+  // awaits resolve and race it over the same shared global.fetch mock and FB.cfg, exactly the
+  // mistake this test made on its first version (caught immediately: the "Puppeteer's Rod" test
+  // above crashed with a "Nullcore Orb" error message once a second un-awaited IIFE was added).
+  posted.length = 0;
+  FB._resetGearCatalogCache(); // else the previous scenario's mocked catalog (only item 924) stays cached
+  global.fetch = async (url, init) => {
+    if (typeof url === 'string' && url.includes('/api/gear/instances/')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { docId: 'Y', GAME_ITEM_ID_CID: 952, DURABILITY_CID: 0, REPAIR_COUNT_CID: 3, EQUIPPED_TO_SLOT_CID: 15 } ] }) };
+    }
+    if (typeof url === 'string' && url.includes('/api/gear/items')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { GAME_ITEM_ID_CID: 952, NAME_CID: 'Sticky Lure [GEAR]', REPAIR_COUNT_CID: 3, itemEffects: FISHING_TRIGGER,
+          repairCost: { INPUT_ID_CID_array: [6, 23], INPUT_AMOUNT_CID_array: [5, 3],
+            RESET_INPUT_ID_CID_array: [], RESET_INPUT_AMOUNT_CID_array: [] } } ] }) };
+    }
+    if (init && init.method === 'POST') { posted.push(url); return { ok: true, status: 200, json: async () => ({}) }; }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  const saved = { autoRepairGear: FB.cfg.autoRepairGear, continueOnBrokenGear: FB.cfg.continueOnBrokenGear };
+  FB.config({ autoRepairGear: true, continueOnBrokenGear: false });
+  let threw = null;
+  try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
+  eq('a fishing item with no Restore recipe throws instead of calling the (nonexistent) restore endpoint',
+     !!(threw && /no Restore recipe/.test(threw.message)), true);
+  eq('...and never actually calls the restore API (no POST fired)', posted.length, 0);
+
+  FB.config({ continueOnBrokenGear: true });
+  threw = null;
+  try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
+  eq('with --continueOnBrokenGear=true, the same item does NOT throw', threw, null);
+  eq('...and still never calls the restore API', posted.length, 0);
+
+  FB.config({ autoRepairGear: saved.autoRepairGear, continueOnBrokenGear: saved.continueOnBrokenGear });
+
+  // ============================================================================================
+  // End-to-end: the exact real failure this session hit live (2026-09-26, main account) --
+  // "Nullcore Orb [GEAR]" (a dungeon-only trinket, no OnStartFishing trigger) stuck at 0
+  // durability with repairs maxed. Before the fishing-relevance filter, checkAndRepairGear didn't
+  // care what an item was FOR, only that it was equipped and broken -- so this dungeon item
+  // (which fishing never touches) still blocked an entire fishing batch. Must now be silently
+  // skipped: no throw, no repair/restore API call, nothing -- fishing proceeds as if this item
+  // didn't exist, matching the user's own rule: "if we're fishing, we don't care what's broken in
+  // the dungeon."
+  posted.length = 0;
+  FB._resetGearCatalogCache();
+  global.fetch = async (url, init) => {
+    if (typeof url === 'string' && url.includes('/api/gear/instances/')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { docId: 'Z', GAME_ITEM_ID_CID: 204, DURABILITY_CID: 0, REPAIR_COUNT_CID: 2, EQUIPPED_TO_SLOT_CID: 6 } ] }) };
+    }
+    if (typeof url === 'string' && url.includes('/api/gear/items')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { GAME_ITEM_ID_CID: 204, NAME_CID: 'Nullcore Orb [GEAR]', REPAIR_COUNT_CID: 2, itemEffects: DUNGEON_TRIGGER,
+          repairCost: { INPUT_ID_CID_array: [200], INPUT_AMOUNT_CID_array: [1],
+            RESET_INPUT_ID_CID_array: [], RESET_INPUT_AMOUNT_CID_array: [] } } ] }) };
+    }
+    if (init && init.method === 'POST') { posted.push(url); return { ok: true, status: 200, json: async () => ({}) }; }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  FB.config({ autoRepairGear: true, continueOnBrokenGear: false });
+  threw = null;
+  try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
+  eq('a broken DUNGEON-only item never throws (fishing never even looks at it)', threw, null);
+  eq('...and never calls any repair/restore API for it', posted.length, 0);
+
+  FB.config({ autoRepairGear: saved.autoRepairGear, continueOnBrokenGear: saved.continueOnBrokenGear, tokenFile: savedTokenFile });
   global.fetch = realFetch;
 })();

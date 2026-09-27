@@ -422,11 +422,32 @@ async function restoreGear(gearInstanceId) {
 // exposes this -- same technique as fish-catalog.json, see fishing-notes.md). Only for readable
 // log/error text; never used for any decision logic.
 const MATERIAL_NAMES = { 7: 'Ethereal Thread', 21: 'Wood', 22: 'Fiber', 23: 'Bone', 133: 'Transfuser', 200: 'Glass Orb', 250: 'Gear Ember' };
+// A gear item's catalog entry lists which action(s) drain its durability via itemEffects[].effects[].triggerType
+// -- confirmed live 2026-09-26 by pulling every equipped item on the main account: Rod and Lure
+// (e.g. "Puppeteer's Rod", "Sticky Lure") carry ONLY "OnStartFishing"; every Head/Body/Ring/Orb
+// piece carries "OnStartDungeon" (some also OnDamage/OnDeath combat effects) and NEVER
+// "OnStartFishing". This is the authoritative signal for "does this item matter for fishing" --
+// far more reliable than guessing from EQUIPPABLE_TO_CID slot numbers, which aren't documented and
+// could shift. Matches the user's own rule (2026-09-26): "if we're fishing, we don't care what's
+// broken in the dungeon and vice versa. The only things that matter for fishing are lures and rods."
+function isFishingGear(cat) {
+  if (!cat) return false;
+  return (cat.itemEffects || []).some(ie => (ie.effects || []).some(e => e.triggerType === 'OnStartFishing'));
+}
 // Pure decision logic (no network) so this is unit-testable offline -- see test.js. Only equipped
 // items at EXACTLY 0 durability are actionable; anything above 0 is left alone regardless of how
 // low it is, matching the user's explicit rule (repair/restore only triggers at 0, never earlier).
 // needsRestore carries the Restore material cost (resetInputs/resetAmounts) so the caller can check
 // affordability before spending anything.
+//
+// FISHING-RELEVANCE FILTER (2026-09-26): a broken dungeon-only item (Head/Body/Ring/Orb/etc) used
+// to block every fishing batch -- checkAndRepairGear ran before every start_run regardless of what
+// was actually broken, so a Nullcore Orb (a dungeon trinket) stuck at 0 durability with no Restore
+// recipe stopped fishing entirely, even though fishing never touches that item's durability at all
+// (confirmed: only OnStartFishing items lose durability on a cast; see isFishingGear above). Only
+// items whose catalog entry is confirmed fishing-relevant (isFishingGear) are now considered here;
+// an unknown item (catalog lookup miss) is treated as NOT fishing-relevant and skipped, rather than
+// guessed at, since acting on the wrong item is the worse failure mode.
 function decideGearActions(instances, catalog) {
   const catalogById = {}; (catalog || []).forEach(c => catalogById[c.GAME_ITEM_ID_CID] = c);
   const toRepair = [], needsRestore = [];
@@ -434,6 +455,7 @@ function decideGearActions(instances, catalog) {
     if (inst.EQUIPPED_TO_SLOT_CID === -1 || inst.EQUIPPED_TO_SLOT_CID == null) continue;
     if (inst.DURABILITY_CID !== 0) continue;
     const cat = catalogById[inst.GAME_ITEM_ID_CID];
+    if (!isFishingGear(cat)) continue;
     const maxRepairs = cat ? cat.REPAIR_COUNT_CID : null;
     const usedRepairs = inst.REPAIR_COUNT_CID || 0;
     const name = cat ? cat.NAME_CID : ('item ' + inst.GAME_ITEM_ID_CID);
@@ -481,6 +503,20 @@ async function checkAndRepairGear() {
     }
   }
   for (const item of needsRestore) {
+    // Some gear items' catalog entries carry an EMPTY RESET_INPUT_ID_CID_array -- confirmed live
+    // 2026-09-26: "Nullcore Orb [GEAR]" (item 204) has no Restore recipe defined at all, unlike
+    // every other equipped item, which all list at least Gear Ember. computeMaterialShortfall on
+    // an empty array vacuously returns [] (nothing to be short of), which used to read as
+    // "affordable" and call restoreGear() anyway -- the server then 500s with "Reset items not
+    // found" (there IS no reset recipe server-side either), an uncaught exception that killed the
+    // whole batch before a single fish was cast. An item with zero listed reset inputs can never
+    // be restored, which is a stronger, permanent version of "materials are short" -- route it
+    // through the exact same stop/continue decision instead of ever calling the API.
+    if (item.resetInputs.length === 0) {
+      const msg = `gear: ${item.name} is at 0 durability with repairs maxed (${item.usedRepairs}/${item.maxRepairs}) and needs Restore, but this item has no Restore recipe at all (catalog lists no reset materials for it)`;
+      if (cfg.continueOnBrokenGear) { warn(`  ${msg} -- continuing anyway with it broken (--continueOnBrokenGear=true)`); continue; }
+      throw new Error(`${msg} -- stopping so you can decide how to proceed (pass --continueOnBrokenGear=true to fish through this instead)`);
+    }
     const balances = await Promise.all(item.resetInputs.map(id => fetchItemBalance(id)));
     const shortfall = computeMaterialShortfall(item.resetInputs, item.resetAmounts, balances);
     if (shortfall.length) {
@@ -1419,8 +1455,11 @@ async function playGame(n, fishBudget) {
       // catch cap (maxPerDay/maxPerDayJuiced) -- confirmed live 2026-09-09: start_run succeeded
       // and caught a fish even after the day's tally read 21 against a maxPerDayJuiced of 20, so
       // that counter is NOT a reliable client-side predictor of "casts remaining" once Jebaitor is
-      // in play. Recorded here (not decided on) purely so run data can show which catches were
-      // free -- captured at the moment of catch, before any later action resets the field.
+      // in play. This line keeps the catch-turn's own value in sync with the per-turn field every
+      // other turn now also records (2026-09-25, user asked to widen capture beyond just catches) --
+      // both should already agree since jebaitorTriggered is set once per cast at start_run and
+      // shouldn't change mid-fight, but keep this explicit assignment as a safety net in case a
+      // future catch-turn snap somehow skips the generic per-turn capture.
       if (last) {
         last.caught = gs.caughtFish && gs.caughtFish.name;
         last.jebaitorTriggered = !!gs.jebaitorTriggered;
@@ -1504,7 +1543,7 @@ async function playGame(n, fishBudget) {
       resp = await action('play_cards', { cards: [], focusPoint: gs.focusPoint });
       { const before = hist[hist.length - 1]; gs = stateOf(resp); hist.push(gs.fishPosition.slice());
         moveLens.push(gs.lastMovePath ? gs.lastMovePath.length : man(before, gs.fishPosition)); }
-      Object.assign(snap, { fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter });
+      Object.assign(snap, { fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter, jebaitorTriggered: !!gs.jebaitorTriggered });
       run.turns.push(snap);
       log(`     redrew -> fish->[${gs.fishPosition}] fishHp ${gs.fishHp} mana ${gs.playerHp} hand=[${gs.hand}]`);
       continue;
@@ -1550,7 +1589,7 @@ async function playGame(n, fishBudget) {
     const kind = inZone(def.critZones) ? 'CRIT' : inZone(def.hitZones) ? 'HIT' : 'miss';
     { const before = hist[hist.length - 1]; gs = newGs; hist.push(gs.fishPosition.slice());
       moveLens.push(gs.lastMovePath ? gs.lastMovePath.length : man(before, gs.fishPosition)); }
-    Object.assign(snap, { result: kind, fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter });
+    Object.assign(snap, { result: kind, fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter, jebaitorTriggered: !!gs.jebaitorTriggered });
     run.turns.push(snap);
     log(`     ${kind} | ${bar(gs)} | mana ${gs.playerHp} | focus ${gs.focusMeter} | fish->[${gs.fishPosition}] path=${JSON.stringify(gs.lastMovePath)} hand=[${gs.hand}]`);
   }
@@ -1641,7 +1680,15 @@ async function run(onGameDone) {
     // silently overwritten and never saved (found live 2026-09-10 running a 4-game batch: only the
     // final game's run JSON ever existed on disk). Calling onGameDone here, once per completed
     // game, is what actually fixes it -- exporting once after the whole loop can only see the last.
-    if (onGameDone) onGameDone(lastRun, g);
+    //
+    // BUT (found live 2026-09-26): when the daily cap hits on the very first start_run of a game
+    // (fishPlayed:0, playGame's early return at its own daily-cap catch block, before it ever
+    // creates a new `run` object / reassigns lastRun), this call used to fire unconditionally --
+    // re-exporting the PREVIOUS game's already-exported lastRun as if it were new, writing a
+    // byte-identical duplicate run JSON and double-merging that whole game's fish into the replay
+    // viewer. Same guard as the error-path branch above: only export when lastRun's identity
+    // actually changed during this attempt.
+    if (onGameDone && lastRun !== lastRunBeforeAttempt) onGameDone(lastRun, g);
     if (outcome.result === 'daycap') { log('  stopping: daily cap reached, no more games possible today'); break; }
     await sleep(cfg.delayMs);
   }
@@ -1742,6 +1789,12 @@ module.exports = { run, stop: () => { stop = true; }, config: o => Object.assign
   _predict: predict, _decide: decide, _shouldRedraw: shouldRedraw, _drawPool: drawPool, _effectAt: effectAt, _reachable: reachable, _reachableWeighted: reachableWeighted, _zoneCell: zoneCell,
   _chooseAction: chooseAction, _lookaheadValue: lookaheadValue, _bestPositionFor: bestPositionFor, _positionsFor: positionsFor, _evaluateRedraw: evaluateRedraw, _combos: combos, _playValue: playValue,
   _zoneDensity: zoneDensity, _loadEmpiricalPriors: loadEmpiricalPriors, _leafEstimate: leafEstimate,
-  _decideGearActions: decideGearActions, _checkAndRepairGear: checkAndRepairGear,
+  _decideGearActions: decideGearActions, _checkAndRepairGear: checkAndRepairGear, _isFishingGear: isFishingGear,
   _computeMaterialShortfall: computeMaterialShortfall,
+  // Test-only: fetchGearItemsCatalog() memoizes the catalog in a module-level variable across the
+  // whole process (real usage only ever needs one real catalog per run), which silently broke a
+  // second gear test scenario added later in the same test.js process -- its mocked catalog
+  // response was never actually fetched because the FIRST scenario's mock had already populated
+  // the cache. Exposed here so tests can force a clean re-fetch between scenarios.
+  _resetGearCatalogCache: () => { gearItemsCatalogCache = null; },
   _coerceCliValue: coerceCliValue, _parseCliArgs: parseCliArgs };

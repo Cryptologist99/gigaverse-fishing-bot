@@ -87,9 +87,20 @@ lastMovePath[zoneA,zoneB] (0-indexed 4x4 zones), caughtFish{...}, deckCardData[c
   `RARITY_NAME` values are exactly the 7 tier names already used elsewhere in these notes.
 
 ## JEBAITOR = A FREE CAST (user-confirmed 2026-09-18)
-- `jebaitorTriggered` (recorded on the CATCH turn of every run JSON, and nowhere else) means **that
-  cast does not count against the daily limit** -- it is a throughput refund, NOT a combat bonus.
-  The field was previously listed here only as an undocumented state field.
+- `jebaitorTriggered` means **that cast does not count against the daily limit** -- it is a
+  throughput refund, NOT a combat bonus. The field was previously listed here only as an
+  undocumented state field.
+- **Capture widened 2026-09-25 (user flagged a real gap):** until this date, both fishbot.js and
+  fishbot-node.js only ever read `gs.jebaitorTriggered` once per fish, at the moment of a CATCH --
+  so a fish that was LOST never had this field recorded at all, undercounting true proc rate for
+  any day with losses. Fixed: every turn snapshot (redraw and play, in both files) now records its
+  own `jebaitorTriggered: !!gs.jebaitorTriggered`, captured from the state returned right after
+  that turn's action -- so it's visible turn-by-turn, win or lose, not just at catches.
+  **Open question, not yet empirically confirmed:** the field is presumed set once at `start_run`
+  and to stay constant for that whole fish/cast (it flags the CAST, not the current play), so every
+  turn within one fish should show the same value. This widened per-turn capture is what will let a
+  future run's data actually confirm or disprove that assumption -- check a multi-turn fish's turns
+  for a flip once enough post-2026-09-25 data exists.
 - **Measured rate: 101 of 496 recorded catches = 20.4%.** By mana bar (a rough proxy for
   account/era): manaMax 11 18.8% (n=170), 12 20.0% (n=25), 13 30.8% (n=39), 14 23.2% (n=224).
   The manaMax-10 era shows 0/38, i.e. it was not yet active then.
@@ -279,7 +290,8 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
     durability indexed BY RARITY -- e.g. Puppeteer's Rod is `[40,44,50,60]`, so an Epic (rarity 3)
     one maxes at 60, confirmed exactly against the in-game `[47/60]` display), `repairCost`
     (`INPUT_ID_CID_array`/`INPUT_AMOUNT_CID_array` for a normal repair, `RESET_INPUT_ID_CID_array`/
-    `RESET_INPUT_AMOUNT_CID_array` for Restore -- always item 250, "Gear Ember"), and
+    `RESET_INPUT_AMOUNT_CID_array` for Restore -- item 250 "Gear Ember" on every item checked so
+    far, but **NOT universal**: see the empty-array item below), and
     `REPAIR_COUNT_CID` -- **max repairs allowed is NOT a flat 3 for everything** (same field name
     as the instance's "repairs used", different meaning on this endpoint) -- confirmed 5 for
     Head/Body armor, 3 for Ring/Rod/Lure.
@@ -319,6 +331,19 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
     through it. Only affects the insufficient-materials case -- repair/restore itself is unchanged.
   - The pure decision parts (`decideGearActions`, `computeMaterialShortfall`) are unit-tested
     offline in `test.js`.
+- **Some items have NO Restore recipe at all — a real bug found + fixed 2026-09-26.** `Nullcore
+  Orb [GEAR]` (item 204) reached 0 durability with repairs maxed (2/2) on the main account, but its
+  catalog entry's `RESET_INPUT_ID_CID_array` is `[]` (empty), unlike every other item checked, which
+  all list Gear Ember. `computeMaterialShortfall([], [], [])` vacuously returns `[]` (nothing to be
+  short of), which the old code read as "affordable" and called `POST /api/gear/restore` anyway --
+  the server has no reset recipe for this item either and 500s with `"Reset items not found"`, an
+  uncaught exception that killed an entire live 50-fish batch on the main account before a single
+  fish was cast (first `checkAndRepairGear()` call of the run). **Fix**: `checkAndRepairGear` now
+  checks `item.resetInputs.length === 0` BEFORE ever calling the API, treating "no recipe exists" as
+  a stronger, permanent version of "materials are short" -- same stop-by-default /
+  `--continueOnBrokenGear=true`-to-override behavior, just a different message and never an actual
+  API call. Regression-tested in `test.js` (mocked catalog entry with an empty reset array, asserts
+  no POST ever fires either way).
 
 ## CLI boolean flags silently did nothing when set to `false` (fixed 2026-09-25)
 - **Real bug, reported by a user's friend running the public repo (via their own LLM's code
