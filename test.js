@@ -2,6 +2,12 @@
 // fishbot.js is a frozen/deprecated browser-console snapshot, see its header comment).
 const FB = require('./fishbot-node.js');
 
+// Credential safety, set before any test runs: the tests only ever see the committed fake token,
+// and any real network call fails loudly. Individual blocks may swap in a mocked fetch and restore
+// this guard afterward, but nothing here can read a real token.txt or reach the live API.
+FB.config({ tokenFile: 'test-token.txt' });
+global.fetch = async (url) => { throw new Error('test.js must never reach the network (tried ' + url + ')'); };
+
 let pass = 0, fail = 0;
 const eq = (name, got, want) => {
   const ok = JSON.stringify(got) === JSON.stringify(want);
