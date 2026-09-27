@@ -77,9 +77,9 @@ This runs exactly one fish and stops. Useful flags:
   oils with these settings directly (for scripted/non-interactive runs). Leave these unset to be
   asked each time you run it in a real terminal.
 - `--maxTurnMs=N` — how long (ms) the bot may spend re-checking a genuinely close play-vs-redraw call
-  one ply deeper before giving up and using its faster answer instead (default 90000 = 90s). Most
-  turns are instant; this only matters on close calls. Lower it for snappier turns at the cost of
-  occasionally missing a close-call improvement, or raise it to favor decision quality over speed.
+  one ply deeper before giving up and using its faster answer instead (default 5000 = 5s). Most
+  turns are instant; this only matters on close calls. Measured on real runs, longer limits add a
+  lot of waiting for very little benefit, but you can raise it to let more close calls finish.
 - `--autoRepairGear=false` — turn off automatic gear repair/restore before each cast (default: on).
   With it on, equipped gear at 0 durability gets repaired automatically, and Restored (a rarity
   reroll, not a neutral reset — see `fishing-notes.md`) once repairs are maxed out.

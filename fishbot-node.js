@@ -296,7 +296,13 @@ const cfg = {
   // `escalationAttempted` / `escalationTimedOut` (previously untracked) specifically so this number
   // can be revisited from real frequency/timeout data instead of a single example once enough live
   // casts have run under it.
-  depth3TimeBudgetMs: 90000,
+  //
+  // Lowered 90000 -> 5000 (user, 2026-09-26) after exactly that revisit: all 106 escalated turns
+  // from one day on both accounts were replayed with a long cap. At 90s escalation changed only 4
+  // decisions for ~0.033 expected extra fish/day (depth-3's own estimate) while costing ~77 min/day
+  // of waiting; 5s keeps ~75% of that value for ~6 min/day. Gains are small by construction --
+  // escalation only fires when the top two options are within closeCallGap (0.01 win prob).
+  depth3TimeBudgetMs: 5000,
 
   // --- draft/card-selection knobs (2026-09-12, see scoreCard/rankDraft) ---------------------
   // Small additive nudge toward drafting a card that covers board zones the current deck is
@@ -1721,8 +1727,8 @@ if (require.main === module) {
   // field is already settable via --fieldName=value, but that internal name gives no hint of what
   // it controls). This is the cap on how long the bot may spend re-checking a close call one ply
   // deeper before falling back to its 2-ply answer -- see depth3TimeBudgetMs's cfg comment for why
-  // the shipped default (90s) favors decision quality over turn speed. Lower it for snappier turns
-  // at the cost of occasionally missing a close-call improvement; raise it to never time out.
+  // the shipped default is 5s (measured: longer budgets cost a lot of time for very little gain).
+  // Raise it to let more close calls finish the deeper check, at the cost of longer runs.
   if ('maxTurnMs' in args) { args.depth3TimeBudgetMs = args.maxTurnMs; delete args.maxTurnMs; }
   Object.assign(cfg, args);
   process.on('SIGINT', () => { stop = true; log('stopping...'); });

@@ -369,6 +369,17 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
      decide whether to change `--maxTurnMs` next time.
 - None of this changes the default (still 90000ms / 90s) or the escalation logic itself -- purely
   visibility. Full regression suite (106/106) unaffected.
+- **Default lowered 90s -> 5s (2026-09-26, user-approved) after a full budget study.** All 106
+  escalated turns from one day (both accounts) were rebuilt from the run files and replayed with a
+  5-minute cap, recording the depth-2 pick, the depth-3 pick, and how long depth-3 really needs
+  (reconstruction exact: 41/41 live timeouts reproduced the same depth-2 pick, 31/31 live
+  escalations the same depth-3 pick; replay timings scaled by ~1.9x to live speed). Results at
+  live speed: depth-3 median 37s, p75 152s, 26/106 still unfinished at ~160s. At 90s escalation
+  changed 4 of 106 decisions for ~0.033 expected extra fish/day (depth-3's own win-prob estimate)
+  at ~77 min/day of waiting; 5s keeps ~0.025 of that for ~6 min/day; 1-3s changes nothing; 120s
+  adds ~17 min/day for +0.004. Gains are small by construction: escalation only fires when the top
+  two options are within closeCallGap (0.01 win prob) of each other. One day of data -- enough to
+  show the effect is small, not to pin its exact size.
 - **Follow-up same day**: the timeout RATE was answerable from existing telemetry (27.2% of
   attempts, n=342, 2026-09-20/21/22), but how long a SUCCESSFUL escalation actually takes was not
   -- the elapsed time only ever existed in the live "done in Xs" log line, never persisted. Added
