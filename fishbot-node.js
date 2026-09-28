@@ -451,6 +451,12 @@ function isFishingGear(cat) {
 function decideGearActions(instances, catalog) {
   const catalogById = {}; (catalog || []).forEach(c => catalogById[c.GAME_ITEM_ID_CID] = c);
   const toRepair = [], needsRestore = [];
+  // Two identical items can be equipped at once (e.g. two Sticky Lures), and their log lines were
+  // indistinguishable. When an item type is equipped more than once, tag each with the tail of its
+  // docId, which is stable across runs, so the log says which one was repaired/restored.
+  const equippedCount = {};
+  for (const inst of (instances || [])) if (inst.EQUIPPED_TO_SLOT_CID !== -1 && inst.EQUIPPED_TO_SLOT_CID != null)
+    equippedCount[inst.GAME_ITEM_ID_CID] = (equippedCount[inst.GAME_ITEM_ID_CID] || 0) + 1;
   for (const inst of (instances || [])) {
     if (inst.EQUIPPED_TO_SLOT_CID === -1 || inst.EQUIPPED_TO_SLOT_CID == null) continue;
     if (inst.DURABILITY_CID !== 0) continue;
@@ -458,7 +464,8 @@ function decideGearActions(instances, catalog) {
     if (!isFishingGear(cat)) continue;
     const maxRepairs = cat ? cat.REPAIR_COUNT_CID : null;
     const usedRepairs = inst.REPAIR_COUNT_CID || 0;
-    const name = cat ? cat.NAME_CID : ('item ' + inst.GAME_ITEM_ID_CID);
+    const baseName = cat ? cat.NAME_CID : ('item ' + inst.GAME_ITEM_ID_CID);
+    const name = equippedCount[inst.GAME_ITEM_ID_CID] > 1 ? baseName + ' (id ' + String(inst.docId).split('_').pop().slice(-4) + ')' : baseName;
     if (maxRepairs != null && usedRepairs >= maxRepairs) {
       const rc = (cat && cat.repairCost) || {};
       needsRestore.push({ docId: inst.docId, name, usedRepairs, maxRepairs,

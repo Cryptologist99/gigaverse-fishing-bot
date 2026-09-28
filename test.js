@@ -738,6 +738,17 @@ const DUNGEON_TRIGGER = [{ effects: [{ triggerType: 'OnStartDungeon', durability
        toRepair.map(x => x.docId), ['C']);
     eq('decideGearActions: mixed real-shaped list -- exactly the one maxed FISHING item goes to needsRestore (dungeon item excluded)',
        needsRestore.map(x => x.docId), ['D']); }
+
+  // Two identical lures equipped at once (real case on the bot account, 2026-09-28): log names must
+  // say which one, using the stable tail of each docId; a single equipped item keeps its plain name.
+  { const lureA = { docId: 'GearInstance#952_1788805963_bda94357', GAME_ITEM_ID_CID: 952, DURABILITY_CID: 0, REPAIR_COUNT_CID: 2, EQUIPPED_TO_SLOT_CID: 15 };
+    const lureB = { docId: 'GearInstance#952_1788805964_8b1dd276', GAME_ITEM_ID_CID: 952, DURABILITY_CID: 0, REPAIR_COUNT_CID: 2, EQUIPPED_TO_SLOT_CID: 15 };
+    const { toRepair } = FB._decideGearActions([lureA, lureB, repairable], catalog);
+    eq('decideGearActions: two identical equipped lures get distinguishable names',
+       toRepair.filter(x => x.docId.includes('952')).map(x => x.name),
+       ['Sticky Lure [GEAR] (id 4357)', 'Sticky Lure [GEAR] (id d276)']);
+    eq('decideGearActions: an item equipped only once keeps its plain name',
+       toRepair.find(x => x.docId === 'C').name, "Puppeteer's Rod [GEAR]"); }
 }
 
 // ============================================================================================
