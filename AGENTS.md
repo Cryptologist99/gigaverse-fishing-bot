@@ -60,8 +60,8 @@ runs (open it in any browser, no server needed).
 - **Gear auto-repair/restore is ON BY DEFAULT (`cfg.autoRepairGear`), unlike oils/rings above** —
   this one spends real crafting materials automatically, without a per-run prompt, because the
   user explicitly directed it as standing behavior. Restore in particular rerolls the item's
-  rarity (a real gamble, not a neutral reset). If a Restore is needed but materials are short, the
-  batch stops cleanly by default (`--continueOnBrokenGear=true` overrides that to keep fishing with
+  rarity (a real gamble, not a neutral reset). If a repair or Restore is needed but can't happen
+  (materials short, or the game rejects it), the batch stops cleanly by default (`--continueOnBrokenGear=true` overrides that to keep fishing with
   the item still broken) — don't pass that flag on the user's behalf without them asking, same as
   every other spend-real-resources flag on this list.
 - **"a run" / "one run" always means ONE FISH**, not a multi-fish chain. Default to `--maxFish=1`

@@ -329,6 +329,11 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
     durability anyway." Same-day follow-up to the stop-by-default behavior above: the user wants
     the safety stop by default, but also a way to override it when they've already decided to fish
     through it. Only affects the insufficient-materials case -- repair/restore itself is unchanged.
+  - **Repairs follow the same rule (2026-09-29).** Previously a repair skipped the material check and
+    only warned on failure, so a Puppeteer's Rod that failed to repair 3 times ("Failed to repair
+    gear", 500) kept fishing broken. Now `checkAndRepairGear` checks the repair's own materials
+    (`repairCost.INPUT_ID_CID_array`/`INPUT_AMOUNT_CID_array`) first, and a shortage OR a rejected
+    repair stops the batch, with `--continueOnBrokenGear=true` as the same override.
   - The pure decision parts (`decideGearActions`, `computeMaterialShortfall`) are unit-tested
     offline in `test.js`.
 - **Some items have NO Restore recipe at all — a real bug found + fixed 2026-09-26.** `Nullcore

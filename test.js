@@ -934,6 +934,61 @@ const DUNGEON_TRIGGER = [{ effects: [{ triggerType: 'OnStartDungeon', durability
   eq('a broken DUNGEON-only item never throws (fishing never even looks at it)', threw, null);
   eq('...and never calls any repair/restore API for it', posted.length, 0);
 
+  // ============================================================================================
+  // End-to-end: a REPAIR that can't happen must stop the batch, same rule as Restore. Real case
+  // 2026-09-29: a Puppeteer's Rod failed to repair 3 times (server 500) and the batch kept fishing
+  // with it broken. Two ways it can fail: materials short (checked BEFORE calling the API), or the
+  // server rejecting the call anyway. Both throw by default; --continueOnBrokenGear=true overrides.
+  const rodMock = ({ ember, repairOk }) => async (url, init) => {
+    if (typeof url === 'string' && url.includes('/api/gear/instances/')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { docId: 'R', GAME_ITEM_ID_CID: 924, DURABILITY_CID: 0, REPAIR_COUNT_CID: 1, EQUIPPED_TO_SLOT_CID: 14 } ] }) };
+    }
+    if (typeof url === 'string' && url.includes('/api/gear/items')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { GAME_ITEM_ID_CID: 924, NAME_CID: "Puppeteer's Rod [GEAR]", REPAIR_COUNT_CID: 3, itemEffects: FISHING_TRIGGER,
+          repairCost: { INPUT_ID_CID_array: [200, 7, 133], INPUT_AMOUNT_CID_array: [2, 5, 3],
+            RESET_INPUT_ID_CID_array: [250], RESET_INPUT_AMOUNT_CID_array: [5] } } ] }) };
+    }
+    if (typeof url === 'string' && url.includes('/api/items/balances')) {
+      return { ok: true, status: 200, json: async () => ({ entities: [
+        { ID_CID: 200, BALANCE_CID: ember }, { ID_CID: 7, BALANCE_CID: 50 }, { ID_CID: 133, BALANCE_CID: 50 } ] }) };
+    }
+    if (init && init.method === 'POST') {
+      posted.push(url);
+      return repairOk ? { ok: true, status: 200, json: async () => ({}) }
+                      : { ok: false, status: 500, json: async () => ({ message: 'Failed to repair gear' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  // materials short (1 Glass Orb, needs 2): stop before ever calling the repair API
+  posted.length = 0; FB._resetGearCatalogCache(); global.fetch = rodMock({ ember: 1, repairOk: true });
+  FB.config({ autoRepairGear: true, continueOnBrokenGear: false }); threw = null;
+  try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
+  eq('repair with materials short: stops the batch, naming the missing material',
+     !!(threw && /needs a repair, but materials are short: Glass Orb \(need 2, have 1\)/.test(threw.message)), true);
+  eq('...and never calls the repair API', posted.length, 0);
+  FB.config({ continueOnBrokenGear: true }); threw = null;
+  try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
+  eq('repair with materials short + --continueOnBrokenGear=true: keeps going', threw, null);
+
+  // materials fine but the server rejects the repair: stop (this is the exact live failure)
+  posted.length = 0; FB._resetGearCatalogCache(); global.fetch = rodMock({ ember: 9, repairOk: false });
+  FB.config({ continueOnBrokenGear: false }); threw = null;
+  try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
+  eq('repair rejected by the server: stops the batch instead of fishing on with broken gear',
+     !!(threw && /the repair failed \(repair failed 500 Failed to repair gear\)/.test(threw.message)), true);
+  FB.config({ continueOnBrokenGear: true }); threw = null;
+  try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
+  eq('repair rejected + --continueOnBrokenGear=true: keeps going', threw, null);
+
+  // materials fine and the repair succeeds: no stop
+  posted.length = 0; FB._resetGearCatalogCache(); global.fetch = rodMock({ ember: 9, repairOk: true });
+  FB.config({ continueOnBrokenGear: false }); threw = null;
+  try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
+  eq('repair with materials in stock: repairs normally, no stop', threw === null && posted.length === 1, true);
+
   FB.config({ autoRepairGear: saved.autoRepairGear, continueOnBrokenGear: saved.continueOnBrokenGear, tokenFile: savedTokenFile });
   global.fetch = realFetch;
 })();

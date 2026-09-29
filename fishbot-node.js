@@ -470,7 +470,11 @@ function decideGearActions(instances, catalog) {
       const rc = (cat && cat.repairCost) || {};
       needsRestore.push({ docId: inst.docId, name, usedRepairs, maxRepairs,
         resetInputs: rc.RESET_INPUT_ID_CID_array || [], resetAmounts: rc.RESET_INPUT_AMOUNT_CID_array || [] });
-    } else toRepair.push({ docId: inst.docId, name, usedRepairs, maxRepairs });
+    } else {
+      const rc = (cat && cat.repairCost) || {};
+      toRepair.push({ docId: inst.docId, name, usedRepairs, maxRepairs,
+        repairInputs: rc.INPUT_ID_CID_array || [], repairAmounts: rc.INPUT_AMOUNT_CID_array || [] });
+    }
   }
   return { toRepair, needsRestore };
 }
@@ -488,12 +492,20 @@ function computeMaterialShortfall(resetInputs, resetAmounts, balances) {
 // before the NEXT cast, not just at the top of a batch. cfg.autoRepairGear defaults on since the
 // user directed this as standing behavior, not an opt-in-per-run action like oils/tier2-3 rings.
 //
-// Repair failures are non-fatal (warn and move on -- the same item just gets re-checked next
-// cast). Restore is different: if the required materials aren't in stock, this THROWS instead of
-// silently skipping, which propagates up through playGame()/run()'s existing fatal-error handling
-// (same path as "Not enough energy" etc.) -- stops the batch cleanly, exports whatever was caught
-// so far, and surfaces a clear reason. User-directed 2026-09-23: "stop and ask" rather than either
-// continuing to fish with broken gear or guessing what to do about missing materials.
+// Repair and Restore follow the same rule: if the item can't be fixed -- materials short, or the
+// server rejects the call -- this THROWS, which propagates up through playGame()/run()'s existing
+// fatal-error handling (same path as "Not enough energy" etc.): stops the batch cleanly, exports
+// whatever was caught so far, and surfaces a clear reason. User-directed 2026-09-23: "stop and ask"
+// rather than continuing to fish with broken gear. --continueOnBrokenGear=true overrides both.
+//
+// Repairs used to skip the material check and just warn on failure. Found live 2026-09-29: a
+// Puppeteer's Rod at 0 durability failed to repair 3 times ("Failed to repair gear", 500) and the
+// batch kept fishing with the rod broken, against that rule.
+function brokenGearStop(msg) {
+  if (cfg.continueOnBrokenGear) { warn(`  ${msg} -- continuing anyway with it broken (--continueOnBrokenGear=true)`); return; }
+  throw new Error(`${msg} -- stopping so you can decide how to proceed (pass --continueOnBrokenGear=true to fish through this instead)`);
+}
+const describeShortfall = shortfall => shortfall.map(s => `${MATERIAL_NAMES[s.id] || ('item ' + s.id)} (need ${s.need}, have ${s.have})`).join(', ');
 async function checkAndRepairGear() {
   if (!cfg.autoRepairGear) return;
   let instances, catalog;
@@ -502,11 +514,18 @@ async function checkAndRepairGear() {
   } catch (e) { warn('  gear check failed:', e.message); return; }
   const { toRepair, needsRestore } = decideGearActions(instances, catalog);
   for (const item of toRepair) {
+    const inputs = item.repairInputs || [], amounts = item.repairAmounts || [];
+    const balances = await Promise.all(inputs.map(id => fetchItemBalance(id)));
+    const shortfall = computeMaterialShortfall(inputs, amounts, balances);
+    if (shortfall.length) {
+      brokenGearStop(`gear: ${item.name} is at 0 durability and needs a repair, but materials are short: ${describeShortfall(shortfall)}`);
+      continue;
+    }
     try {
       await repairGear(item.docId);
       log(`  gear: repaired ${item.name} (was 0 durability, ${item.usedRepairs}/${item.maxRepairs} repairs used)`);
     } catch (e) {
-      warn(`  gear: repair failed for ${item.name}:`, e.message);
+      brokenGearStop(`gear: ${item.name} is at 0 durability and the repair failed (${e.message})`);
     }
   }
   for (const item of needsRestore) {
