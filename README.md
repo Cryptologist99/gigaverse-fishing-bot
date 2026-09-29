@@ -69,10 +69,14 @@ This runs exactly one fish and stops. Useful flags:
   the way (default: no cap — the fish total and the daily cap are the real limits).
 - `--address=0x...` — your wallet address (**required**).
 - `--tokenFile=path` — use a different token file (for a second account — see below).
-- `--tierId=N` — pond tier to fish at (default 1). Tier 2 and Tier 3 require spending a Silver or
-  Gold ring respectively (which ring type is in stock rotates daily), but double/quadruple the hard
-  cores reward for every catch (see `fishing-notes.md`). Auto-consumption/rejection behavior for a
-  missing ring isn't verified yet — try it and see what error comes back if you don't have one.
+- `--tierId=N` — pond tier to fish at (default 1). Tiers only change rewards, not the fish: tier 2
+  doubles and tier 3 quadruples the hard-cores reward per catch, at a cost of **one ring per cast**
+  (Silver for tier 2, Golden for tier 3). Which ring type the game takes depends on your faction and
+  the day, so you can be "out of rings" while still holding other types.
+- `--onOutOfRings=stop|tier1` — what to do if a tier-2/3 cast gets rejected mid-batch (out of today's
+  ring): `stop` (the default) ends the batch cleanly; `tier1` finishes the remaining casts at tier 1.
+  Asked at startup like the oil question if you don't pass it. The bot also checks the tier the game
+  actually started each cast at, so a cast that comes back at a lower tier is caught and recorded.
 - `--useOils=true --oilItemId=... --oilPHitThreshold=...` — skip the interactive oil prompt and use
   oils with these settings directly (for scripted/non-interactive runs). Leave these unset to be
   asked each time you run it in a real terminal.

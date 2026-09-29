@@ -492,12 +492,28 @@ live data -- do not estimate or reuse cached numbers, everything here changes da
   exchange, Tier 2 doubles hard-cores rewards and Tier 3 quadruples them (see "Catch rewards" below).
 - Which ring type is in stock/available rotates on a daily schedule that isn't documented anywhere the
   user has access to — don't assume a given ring is available on a given day.
-- **Not yet verified live**: whether `start_run` auto-consumes the matching ring from inventory when
-  `tierId>1`, what error it returns if the account doesn't own the needed ring, or whether a ring must
-  be equipped via some other action first. Treat a Tier 2/3 request as a real, limited resource spend
-  (same caution as oils) until this is confirmed — watch for a ring-related rejection the same way
-  `"Player has reached max runs for fishing"` (daily cap) and `"Not enough energy"` are already handled
-  as distinct, named error strings.
+- **Confirmed live 2026-09-29 (main account, 21 tier-2 casts):** `start_run` with `tierId: 2`
+  auto-consumes **one ring per cast** from inventory, no equip step. Tiers change only rewards, never
+  the fish (user). The fishing-state response's `pondEntryTiers` lists the accepted rings per tier:
+  - tier 2 `inputItems` [137, 138, 135, 139, 140, 134, 136] = Silver Athena, Archon, Crusader,
+    Foxglove, Summoner, Chobo, Overseer; tier 3 [243, 246, 248, 247, 249, 245, 244] = the Golden
+    versions (Archon, Crusader, Overseer, Foxglove, Summoner, Chobo, Athena). Names from giga.market's
+    `/api/item-details` (fetched from inside the site; its API rejects plain curl).
+  - `inputsBasedOnFactionDay: true`: the game takes ONE type per cast, chosen by the account's
+    faction (`gameState.FACTION_CID`) and the day (user: "different for each faction each day").
+    Main account = faction 4, day 20725 -> Athena Silver (137) only, even though it also held
+    Crusader/Overseer/Archon/Foxglove silvers. So "out of rings" means out of TODAY's type.
+    The exact rotation formula is unknown (one data point); the bot doesn't need it.
+  - Every game record carries `MULTIPLIER_CID` (1/2/4 = tier 1/2/3): the tier the cast was really
+    charged at.
+- **Running out mid-batch (built 2026-09-29, `startRunChecked`):** the bot just tries the cast. A
+  rejected tier-2/3 cast (anything but the daily cap / energy / an unresolved game) is taken as "out
+  of today's ring" and follows `--onOutOfRings` (`stop` default, or `tier1`), asked at startup like
+  oils. The previous fish is already looted by then, so nothing is left half-finished. After every
+  cast it also checks `MULTIPLIER_CID`; a lower tier than asked is recorded and the same policy
+  applies (stop = finish this fish, then stop). Each turn now records `tier`, and merge-run.js uses
+  it per fish, so cores stay right even if the tier changes mid-game. The server's exact
+  out-of-rings error message is still unseen -- note it the first time it happens.
 
 ### "Not enough energy" (user-confirmed 2026-09-22)
 - Energy is a **separate resource from the daily cast cap** -- each `start_run` game costs 12 energy,

@@ -989,6 +989,52 @@ const DUNGEON_TRIGGER = [{ effects: [{ triggerType: 'OnStartDungeon', durability
   try { await FB._checkAndRepairGear(); } catch (e) { threw = e; }
   eq('repair with materials in stock: repairs normally, no stop', threw === null && posted.length === 1, true);
 
+  // ============================================================================================
+  // Rings: a tier-2/3 cast costs one ring (today's ring depends on faction + day). The bot just
+  // tries the cast; a rejection means "out of today's ring" and follows --onOutOfRings. It also
+  // checks the game's MULTIPLIER_CID (1/2/4 = tier 1/2/3, confirmed live 2026-09-29) so a cast that
+  // quietly starts at a lower tier is caught instead of trusted.
+  const starts = [];
+  const actionMock = ({ reject, mult }) => async (url, init) => {
+    if (typeof url === 'string' && url.includes('/api/fishing/action')) {
+      const body = JSON.parse(init.body); starts.push(body.data.tierId);
+      if (reject && body.data.tierId > 1) return { ok: false, status: 400, json: async () => ({ message: reject }) };
+      const m = body.data.tierId > 1 ? (mult ?? Math.pow(2, body.data.tierId - 1)) : 1;
+      return { ok: true, status: 200, json: async () => ({ actionToken: 't', data: { doc: { MULTIPLIER_CID: m, data: {} } } }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const savedRing = { tierId: FB.cfg.tierId, onOutOfRings: FB.cfg.onOutOfRings };
+
+  starts.length = 0; FB._resetRingStop(); global.fetch = actionMock({ reject: 'Missing required items' });
+  FB.config({ tierId: 2, onOutOfRings: 'stop' }); threw = null;
+  try { await FB._startRunChecked(); } catch (e) { threw = e; }
+  eq('rings, rejected + stop: stops with a clear out-of-rings message',
+     !!(threw && /tier-2 cast was rejected .*out of today's ring; stopping/.test(threw.message)), true);
+  eq('...and only tried the tier-2 cast once', starts, [2]);
+
+  starts.length = 0; FB.config({ tierId: 2, onOutOfRings: 'tier1' });
+  { const r = await FB._startRunChecked();
+    eq('rings, rejected + tier1: retries the cast at tier 1', starts, [2, 1]);
+    eq('...reports the cast as tier 1', r.tier, 1);
+    eq('...and keeps the rest of the batch at tier 1', FB.cfg.tierId, 1); }
+
+  starts.length = 0; global.fetch = actionMock({}); FB.config({ tierId: 2, onOutOfRings: 'stop' });
+  { const r = await FB._startRunChecked();
+    eq('rings, accepted at tier 2 (multiplier 2): reported as tier 2, no stop', [r.tier, FB._ringStopPending()], [2, false]); }
+
+  starts.length = 0; global.fetch = actionMock({ mult: 1 }); FB.config({ tierId: 2, onOutOfRings: 'stop' });
+  { const r = await FB._startRunChecked();
+    eq('rings, asked tier 2 but the game started tier 1: records the real tier', r.tier, 1);
+    eq('...and with stop, finishes this fish then stops', FB._ringStopPending(), true); }
+  FB._resetRingStop();
+
+  starts.length = 0; global.fetch = actionMock({ reject: 'Player has reached max runs for fishing' }); FB.config({ tierId: 2, onOutOfRings: 'tier1' }); threw = null;
+  try { await FB._startRunChecked(); } catch (e) { threw = e; }
+  eq('rings: the daily cap at tier 2 is NOT mistaken for missing rings (no tier-1 retry)',
+     [!!(threw && /reached max runs/.test(threw.message)), starts], [true, [2]]);
+
+  FB.config(savedRing);
   FB.config({ autoRepairGear: saved.autoRepairGear, continueOnBrokenGear: saved.continueOnBrokenGear, tokenFile: savedTokenFile });
   global.fetch = realFetch;
 })();

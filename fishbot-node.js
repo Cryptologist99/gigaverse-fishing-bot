@@ -40,6 +40,11 @@ const cfg = {
                     // set. The user creates this file themselves (paste the JWT into it directly,
                     // same as token.txt) -- never pass a JWT value on the command line or in chat.
   nodeId:   '5', tierId: 1, itemId: 0, slotIndex: 0,
+  // What to do when a tier-2/3 cast can't be paid for (one ring per cast; the ring required depends
+  // on the account's faction AND the day, so "out of rings" means out of TODAY's ring). 'stop' ends
+  // the batch cleanly; 'tier1' finishes the remaining casts at tier 1. Asked at startup like oils
+  // (--onOutOfRings=stop|tier1 to skip the question); unattended with no flag it stays 'stop'.
+  onOutOfRings: 'stop',
   // Auto-repair (and auto-Restore, once repairs are maxed) equipped gear at 0 durability before
   // the next cast -- see checkAndRepairGear. Defaults ON, unlike oils/tier2-3 rings -- user
   // explicitly directed this as standing behavior 2026-09-23 ("check before every cast"), not an
@@ -563,6 +568,44 @@ async function fetchState() {
   return j.gameState && j.gameState.data;
 }
 const stateOf  = r => r && r.data && r.data.doc && r.data.doc.data;
+
+// Starts the next cast at cfg.tierId and reports the tier the game ACTUALLY charged for. Every
+// game record carries MULTIPLIER_CID (1 at tier 1, 2 at tier 2, 4 at tier 3 -- confirmed live
+// 2026-09-29), so this never has to trust what it asked for.
+//  - A rejected tier-2/3 cast (anything but the daily cap / energy / an unresolved game) is taken as
+//    "out of today's ring": onOutOfRings 'stop' throws a clear error (the previous fish is already
+//    looted, so nothing is left half-finished); 'tier1' switches the rest of the batch to tier 1.
+//  - If the game starts a cast at a different tier than asked (never seen; guards against a ringless
+//    cast silently becoming tier 1), the real tier is recorded and the same policy applies: 'tier1'
+//    carries on at tier 1, 'stop' finishes this already-started fish and then stops (ringStopPending).
+const tierMultiplier = t => Math.pow(2, (t || 1) - 1);
+let ringStopPending = false;
+async function startRunChecked() {
+  let resp;
+  try {
+    resp = await action('start_run', { nodeId: cfg.nodeId, tierId: cfg.tierId });
+  } catch (e) {
+    if (cfg.tierId <= 1 || /reached max runs|not enough energy|already in a game/i.test(e.message)) throw e;
+    const why = `tier-${cfg.tierId} cast was rejected (server: "${e.message}") -- most likely out of today's ring`;
+    if (cfg.onOutOfRings !== 'tier1') throw new Error(`${why}; stopping (--onOutOfRings=stop). Pass --onOutOfRings=tier1 to finish at tier 1 instead.`);
+    log(`  rings: ${why}; switching to tier 1 for the rest of this batch (--onOutOfRings=tier1)`);
+    cfg.tierId = 1;
+    resp = await action('start_run', { nodeId: cfg.nodeId, tierId: 1 });
+  }
+  const mult = resp && resp.data && resp.data.doc && resp.data.doc.MULTIPLIER_CID;
+  let tier = cfg.tierId;
+  if (typeof mult === 'number' && mult > 0) {
+    tier = Math.round(Math.log2(mult)) + 1;
+    if (tier !== cfg.tierId) {
+      warn(`  rings: asked for tier ${cfg.tierId} but the game started this cast at tier ${tier} (multiplier ${mult})`);
+      if (tier < cfg.tierId) {
+        if (cfg.onOutOfRings === 'tier1') { log('  rings: carrying on at tier 1 for the rest of this batch (--onOutOfRings=tier1)'); cfg.tierId = 1; }
+        else { log('  rings: finishing this fish, then stopping (--onOutOfRings=stop)'); ringStopPending = true; }
+      }
+    }
+  }
+  return { resp, tier };
+}
 const bar = g => `catch ${g.fishMaxHp - g.fishHp}/${g.fishMaxHp}`;
 
 /* ---- geometry ----------------------------------------------------------- */
@@ -1427,6 +1470,9 @@ async function playGame(n, fishBudget) {
   // so fall through to a normal start_run instead of re-looting.
   const pendingDraft = gs && gs.fishHp <= 0 && gs.cardsToAdd && gs.cardsToAdd.length > 0 && gs.cardChosenId == null;
   let resp;
+  // Tier the CURRENT fish was actually cast at (from the game's multiplier via startRunChecked);
+  // a resumed fight/draft wasn't started by this process, so it falls back to the configured tier.
+  let fishTier = cfg.tierId;
   if (midFight) log(`run ${n}: resuming in-progress fight`);
   else if (pendingDraft) log(`run ${n}: resuming pending draft (caught ${(gs.caughtFish && gs.caughtFish.name) || '?'}, not yet looted)`);
   else {
@@ -1439,7 +1485,7 @@ async function playGame(n, fishBudget) {
     // authoritative signal is the server's own rejection once the real limit is hit -- a distinct
     // error from "Player is already in a game" (which means an unresolved fight/draft, not a cap).
     try {
-      resp = await action('start_run', { nodeId: cfg.nodeId, tierId: cfg.tierId });
+      ({ resp, tier: fishTier } = await startRunChecked());
     } catch (e) {
       if (/reached max runs/i.test(e.message)) {
         log(`  daily cap reached (server: "${e.message}") -- stopping cleanly, nothing more to catch today`);
@@ -1450,7 +1496,7 @@ async function playGame(n, fishBudget) {
     gs = stateOf(resp);
   }
 
-  const run = { meta: { node: cfg.nodeId, tier: cfg.tierId, result: null, fish: null,
+  const run = { meta: { node: cfg.nodeId, tier: fishTier, result: null, fish: null,
                         fishMaxHp: gs.fishMaxHp, manaMax: gs.playerMaxHp, focusMax: gs.focusMeterMax,
                         canAlt: gs.fishMaxHp >= cfg.alternateMinHp,
                         canThree: gs.fishMaxHp >= cfg.threeMoveMinHp }, gridSize: G, cards: {}, turns: [] };
@@ -1523,6 +1569,7 @@ async function playGame(n, fishBudget) {
       if (last) last.draft = { options: ranked.map(r => r.id), picked: pick.id, scores: ranked.map(r => ({ id: r.id, score: r.score })) };
       gs = stateOf(resp); updateCards(run, gs);
       if (fishNo >= fishBudget) { run.meta.result = 'win'; log(`  stopping (fish budget ${fishBudget} reached this game) — matches "Leave", no fight left active`); return { result: 'win', fishPlayed: fishNo }; }
+      if (ringStopPending) { run.meta.result = 'win'; log('  stopping: the last cast came back at a lower tier than asked (--onOutOfRings=stop) -- no fight left active'); return { result: 'ringstop', fishPlayed: fishNo }; }
       await sleep(cfg.delayMs);
       // Same daily-cap rejection as the initial start_run above can land here too -- the cap can be
       // hit mid-batch, right after looting a catch, not just at the very start of a run(). Missing
@@ -1531,7 +1578,7 @@ async function playGame(n, fishBudget) {
       // identical -- confirmed live 2026-09-09 when this exact path fired after catching Plankton.
       await checkAndRepairGear();
       try {
-        resp = await action('start_run', { nodeId: cfg.nodeId, tierId: cfg.tierId });
+        ({ resp, tier: fishTier } = await startRunChecked());
       } catch (e) {
         if (/reached max runs/i.test(e.message)) {
           run.meta.result = 'win';
@@ -1569,7 +1616,7 @@ async function playGame(n, fishBudget) {
       resp = await action('play_cards', { cards: [], focusPoint: gs.focusPoint });
       { const before = hist[hist.length - 1]; gs = stateOf(resp); hist.push(gs.fishPosition.slice());
         moveLens.push(gs.lastMovePath ? gs.lastMovePath.length : man(before, gs.fishPosition)); }
-      Object.assign(snap, { fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter, jebaitorTriggered: !!gs.jebaitorTriggered });
+      Object.assign(snap, { fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter, jebaitorTriggered: !!gs.jebaitorTriggered, tier: fishTier });
       run.turns.push(snap);
       log(`     redrew -> fish->[${gs.fishPosition}] fishHp ${gs.fishHp} mana ${gs.playerHp} hand=[${gs.hand}]`);
       continue;
@@ -1615,7 +1662,7 @@ async function playGame(n, fishBudget) {
     const kind = inZone(def.critZones) ? 'CRIT' : inZone(def.hitZones) ? 'HIT' : 'miss';
     { const before = hist[hist.length - 1]; gs = newGs; hist.push(gs.fishPosition.slice());
       moveLens.push(gs.lastMovePath ? gs.lastMovePath.length : man(before, gs.fishPosition)); }
-    Object.assign(snap, { result: kind, fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter, jebaitorTriggered: !!gs.jebaitorTriggered });
+    Object.assign(snap, { result: kind, fishAfter: gs.fishPosition.slice(), lastMovePath: gs.lastMovePath, fishHp: gs.fishHp, mana: gs.playerHp, focus: gs.focusMeter, jebaitorTriggered: !!gs.jebaitorTriggered, tier: fishTier });
     run.turns.push(snap);
     log(`     ${kind} | ${bar(gs)} | mana ${gs.playerHp} | focus ${gs.focusMeter} | fish->[${gs.fishPosition}] path=${JSON.stringify(gs.lastMovePath)} hand=[${gs.hand}]`);
   }
@@ -1716,6 +1763,7 @@ async function run(onGameDone) {
     // actually changed during this attempt.
     if (onGameDone && lastRun !== lastRunBeforeAttempt) onGameDone(lastRun, g);
     if (outcome.result === 'daycap') { log('  stopping: daily cap reached, no more games possible today'); break; }
+    if (ringStopPending) { log('  stopping: a cast came back at a lower tier than asked (--onOutOfRings=stop)'); break; }
     await sleep(cfg.delayMs);
   }
   if (escTurns > 0) {
@@ -1742,6 +1790,25 @@ function exportRun() {
 // inventory, so this is deliberately opt-in each time rather than a silent standing decision --
 // only called from the CLI entry point below, never when run()/playGame() are used as a library
 // (tests, sim.js) or when any oil flag was already given on the command line (`already` below).
+// Same pattern as the oil prompt: only matters above tier 1, asked once at startup, skipped when
+// --onOutOfRings was given, and left at the cautious default ('stop') when nobody is at the keyboard.
+async function promptForRingPolicy(already) {
+  if (cfg.tierId <= 1) return;
+  if (!['stop', 'tier1'].includes(cfg.onOutOfRings)) throw new Error(`--onOutOfRings must be "stop" or "tier1" (got "${cfg.onOutOfRings}")`);
+  if (already) { log(`rings: tier ${cfg.tierId}, one ring per cast; if they run out: ${cfg.onOutOfRings === 'tier1' ? 'finish at tier 1' : 'stop'} (--onOutOfRings=${cfg.onOutOfRings})`); return; }
+  if (!process.stdin.isTTY) {
+    log(`rings: tier ${cfg.tierId}, non-interactive, no --onOutOfRings given -- will STOP if the rings run out (use --onOutOfRings=tier1 to finish at tier 1 instead)`);
+    return;
+  }
+  const rl = require('readline/promises').createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = (await rl.question(`Tier ${cfg.tierId} uses one ring per cast. If they run out mid-batch: [s]top, or finish at [t]ier 1? [S/t]: `)).trim().toLowerCase();
+    cfg.onOutOfRings = (ans === 't' || ans === 'tier1' || ans === 'tier 1') ? 'tier1' : 'stop';
+    log(`rings: if they run out, ${cfg.onOutOfRings === 'tier1' ? 'finish at tier 1' : 'stop'}`);
+  } finally {
+    rl.close();
+  }
+}
 async function promptForOilConfig(already) {
   if (already) { log(`oils: using command-line flags (useOils=${cfg.useOils})`); return; }
   if (!process.stdin.isTTY) {
@@ -1806,6 +1873,7 @@ if (require.main === module) {
   Object.assign(cfg, args);
   process.on('SIGINT', () => { stop = true; log('stopping...'); });
   promptForOilConfig(oilFlagGiven)
+    .then(() => promptForRingPolicy('onOutOfRings' in args))
     .then(() => run(exportRun))
     .catch(e => { warn('fatal:', e.message); process.exit(1); });
 }
@@ -1823,4 +1891,5 @@ module.exports = { run, stop: () => { stop = true; }, config: o => Object.assign
   // response was never actually fetched because the FIRST scenario's mock had already populated
   // the cache. Exposed here so tests can force a clean re-fetch between scenarios.
   _resetGearCatalogCache: () => { gearItemsCatalogCache = null; },
+  _startRunChecked: startRunChecked, _ringStopPending: () => ringStopPending, _resetRingStop: () => { ringStopPending = false; },
   _coerceCliValue: coerceCliValue, _parseCliArgs: parseCliArgs };

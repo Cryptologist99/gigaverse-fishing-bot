@@ -53,10 +53,10 @@ runs (open it in any browser, no server needed).
   run; never pass `--useOils=true` (or any oil flag) or answer that prompt on the user's behalf —
   let them decide whether and how to use oils each time.
 - **`--tierId=2`/`--tierId=3` (default 1) spend a real, limited ring** (Silver for Tier 2, Gold for
-  Tier 3) in exchange for 2x/4x hard-cores rewards — same caution as oils: don't default to a higher
-  tier unless the user asks for one. Auto-consumption/rejection behavior for a missing ring isn't
-  verified live yet, so watch for a ring-related error the same way daily-cap/energy errors are
-  already handled (see `fishing-notes.md`'s "Pond tiers & rings" section).
+  Tier 3) in exchange for 2x/4x hard-cores rewards, **one ring per cast** — same caution as oils: don't
+  default to a higher tier unless the user asks for one. If the rings run out mid-batch the bot
+  stops or finishes at tier 1 depending on `--onOutOfRings`, asked at startup like oils — let the
+  user answer that themselves too (see `fishing-notes.md`'s "Pond tiers & rings" section).
 - **Gear auto-repair/restore is ON BY DEFAULT (`cfg.autoRepairGear`), unlike oils/rings above** —
   this one spends real crafting materials automatically, without a per-run prompt, because the
   user explicitly directed it as standing behavior. Restore in particular rerolls the item's

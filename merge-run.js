@@ -34,6 +34,10 @@ function buildEntries(runPath, account, day) {
     });
     if (cd) { meta.catchQuality = cd.quality; meta.catchRarity = cd.rarity; }
     else { delete meta.catchQuality; delete meta.catchRarity; }
+    // Each turn records the tier its fish was really cast at (from the game's own multiplier), so a
+    // game whose tier changed mid-chain (rings ran out) still credits every fish correctly.
+    const tierTurn = part.turns.find(t => t.tier != null);
+    if (tierTurn) meta.tier = tierTurn.tier;
     return { meta, gridSize: g.gridSize, cards: g.cards, turns: part.turns };
   });
 }
